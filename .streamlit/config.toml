@@ -1,0 +1,50 @@
+[global]
+# Deployment-optimized configuration
+developmentMode = false
+disableWatchdogWarning = true
+showWarningOnDirectExecution = false
+
+[server]
+# Production server settings
+port = 8501
+address = "0.0.0.0"
+maxUploadSize = 50
+maxMessageSize = 50
+enableCORS = true
+enableXsrfProtection = true
+headless = true
+
+[browser]
+# Browser behavior
+gatherUsageStats = false
+showErrorDetails = false
+
+[client]
+# Client behavior
+caching = true
+displayEnabled = true
+
+[runner]
+# Performance optimization
+magicEnabled = true
+installTracer = false
+fixMatplotlib = true
+postScriptGC = true
+fastReruns = true
+
+[theme]
+# Professional theme
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans serif"
+
+[deprecation]
+# Disable deprecation warnings
+showPyplotGlobalUse = false
+
+[logger]
+# Logging configuration
+level = "INFO"
+enableRich = true 
