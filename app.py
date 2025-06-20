@@ -522,40 +522,141 @@ def display_processing_results(result, filename):
                 st.warning(f"Could not fetch job details: {e}")
     
     if not job_details:
-        st.warning("No detailed results available")
+        st.warning("⚠️ No detailed results available")
+        st.info("This might be due to a processing error or expired job data.")
+        
+        # Show basic processing info if available
+        if job_id:
+            st.code(f"Job ID: {job_id}")
+            st.code(f"Status: {status}")
+            
+            # Try to fetch results directly if we have a job_id
+            if status == "completed":
+                st.info("🔄 Attempting to retrieve processing results...")
+                
+                # Try different approaches to get results
+                try:
+                    if IS_STREAMLIT_CLOUD:
+                        st.warning("Results not found in session. Try processing again.")
+                    else:
+                        st.warning("Could not connect to API for detailed results.")
+                except:
+                    pass
         return
+    
+    # Show processing summary
+    st.subheader("📊 Processing Summary")
+    
+    # Create processing summary columns
+    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    
+    with summary_col1:
+        st.metric("📁 File", filename)
+    with summary_col2:
+        st.metric("⚡ Status", status.upper())
+    with summary_col3:
+        if hasattr(job_details, 'processing_time') or 'processing_time' in (job_details if isinstance(job_details, dict) else {}):
+            processing_time = getattr(job_details, 'processing_time', None) or (job_details.get('processing_time') if isinstance(job_details, dict) else None)
+            if processing_time:
+                st.metric("⏱️ Time", f"{processing_time:.2f}s")
+            else:
+                st.metric("⏱️ Time", "N/A")
+        else:
+            st.metric("⏱️ Time", "N/A")
+    with summary_col4:
+        if hasattr(job_details, 'file_size') or 'file_size' in (job_details if isinstance(job_details, dict) else {}):
+            file_size = getattr(job_details, 'file_size', None) or (job_details.get('file_size') if isinstance(job_details, dict) else None)
+            if file_size:
+                st.metric("📦 Size", f"{file_size:,} bytes")
+            else:
+                st.metric("📦 Size", "N/A")
+        else:
+            st.metric("📦 Size", "N/A")
     
     # Extract data from job_details (handle both dict and object)
     if hasattr(job_details, 'model_dump') or hasattr(job_details, 'dict'):
         # Pydantic object
-        validation_result = job_details.validation_result
-        ai_analysis = job_details.ai_analysis
-        fhir_mapping = job_details.fhir_mapping
+        validation_result = getattr(job_details, 'validation_result', None)
+        ai_analysis = getattr(job_details, 'ai_analysis', None)
+        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+        parsed_edi = getattr(job_details, 'parsed_edi', None)
     elif isinstance(job_details, dict):
         # Dictionary
         validation_result = job_details.get("validation_result")
         ai_analysis = job_details.get("ai_analysis")
         fhir_mapping = job_details.get("fhir_mapping")
+        parsed_edi = job_details.get("parsed_edi")
     else:
         # Object with attributes
         validation_result = getattr(job_details, 'validation_result', None)
         ai_analysis = getattr(job_details, 'ai_analysis', None)
         fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+        parsed_edi = getattr(job_details, 'parsed_edi', None)
+    
+    # Show what results are available
+    st.subheader("📋 Available Results")
+    result_cols = st.columns(4)
+    
+    with result_cols[0]:
+        if validation_result:
+            st.success("✅ Validation Results")
+        else:
+            st.error("❌ No Validation Results")
+    
+    with result_cols[1]:
+        if ai_analysis:
+            st.success("🤖 AI Analysis")
+        else:
+            st.warning("⚠️ No AI Analysis")
+    
+    with result_cols[2]:
+        if fhir_mapping:
+            st.success("🔄 FHIR Mapping")
+        else:
+            st.error("❌ FHIR Mapping Failed")
+    
+    with result_cols[3]:
+        if parsed_edi:
+            st.success("📝 EDI Parsing")
+        else:
+            st.error("❌ EDI Parsing Failed")
     
     # Validation Results Section
     if validation_result:
         display_validation_section(validation_result, job_id)
+    else:
+        st.subheader("📋 Validation Results")
+        st.error("⚠️ No validation results available. This usually indicates a parsing failure.")
+        
+        # Show some basic info if we have parsed EDI
+        if parsed_edi:
+            if hasattr(parsed_edi, 'segments') or (isinstance(parsed_edi, dict) and 'segments' in parsed_edi):
+                segments = getattr(parsed_edi, 'segments', None) or parsed_edi.get('segments', [])
+                st.info(f"📊 Document contains {len(segments)} segments")
     
     # AI Analysis Section
     if ai_analysis:
         display_ai_analysis_section(ai_analysis)
+    else:
+        st.subheader("🤖 AI Analysis & Insights")
+        st.warning("⚠️ AI analysis not available. This may be due to API limits or processing errors.")
     
     # FHIR Mapping Section
     if fhir_mapping and status == "completed":
         display_fhir_section(fhir_mapping)
+    elif status == "completed":
+        st.subheader("🔄 FHIR Transformation")
+        st.error("❌ FHIR mapping failed")
+        st.info("This is usually due to validation errors or missing required EDI segments.")
+        
+        # Show error details if available
+        if hasattr(job_details, 'error_message') or (isinstance(job_details, dict) and 'error_message' in job_details):
+            error_msg = getattr(job_details, 'error_message', None) or job_details.get('error_message')
+            if error_msg:
+                st.error(f"Error: {error_msg}")
     
-    # Download Section
-    if status == "completed":
+    # Download Section - Always show if we have a job_id
+    if job_id:
         display_download_section(job_id, filename, job_details)
 
 
@@ -791,12 +892,12 @@ def display_download_section(job_id, filename, job_details):
     col1, col2, col3, col4 = st.columns(4)
     
     # Extract data from job_details (handle both dict and object)
-    if hasattr(job_details, 'dict'):
+    if hasattr(job_details, 'dict') or hasattr(job_details, 'model_dump'):
         # Pydantic object
-        job_dict = job_details.dict()
-        fhir_mapping = job_details.fhir_mapping
-        parsed_edi = job_details.parsed_edi
-        validation_result = job_details.validation_result
+        job_dict = safe_model_dump(job_details)
+        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+        parsed_edi = getattr(job_details, 'parsed_edi', None)
+        validation_result = getattr(job_details, 'validation_result', None)
     elif isinstance(job_details, dict):
         # Dictionary
         job_dict = job_details
@@ -825,7 +926,8 @@ def display_download_section(job_id, filename, job_details):
                     json_content,
                     f"result_{filename}.json",
                     "application/json",
-                    key=f"json_{job_id}"
+                    key=f"json_{job_id}",
+                    help="Download complete processing results as JSON"
                 )
             else:
                 response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/json")
@@ -835,104 +937,125 @@ def display_download_section(job_id, filename, job_details):
                         response.text,
                         f"result_{filename}.json",
                         "application/json",
-                        key=f"json_{job_id}"
+                        key=f"json_{job_id}",
+                        help="Download complete processing results as JSON"
                     )
                 else:
-                    st.text("JSON not available")
+                    st.button("📄 JSON", disabled=True, help="JSON export not available")
         except Exception:
-            st.text("JSON not available")
+            st.button("📄 JSON", disabled=True, help="JSON export failed")
     
-    # XML Download
+    # FHIR Download
     with col2:
         try:
-            if IS_STREAMLIT_CLOUD:
-                # Generate XML from FHIR data
-                if fhir_mapping:
-                    # Simple XML generation
-                    xml_content = "<fhir_bundle>\n"
-                    if hasattr(fhir_mapping, 'dict'):
-                        xml_content += json.dumps(fhir_mapping.dict(), indent=2, default=str)
+            if fhir_mapping:
+                if IS_STREAMLIT_CLOUD:
+                    # Generate FHIR JSON from mapping
+                    fhir_content = json.dumps(safe_model_dump(fhir_mapping), indent=2, default=str)
+                    st.download_button(
+                        "🔄 FHIR",
+                        fhir_content,
+                        f"fhir_{filename}.json",
+                        "application/fhir+json",
+                        key=f"fhir_{job_id}",
+                        help="Download FHIR resources as JSON"
+                    )
+                else:
+                    response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/xml")
+                    if response.status_code == 200:
+                        st.download_button(
+                            "🔄 FHIR",
+                            response.text,
+                            f"fhir_{filename}.xml",
+                            "application/fhir+xml",
+                            key=f"fhir_{job_id}",
+                            help="Download FHIR resources as XML"
+                        )
                     else:
-                        xml_content += json.dumps(fhir_mapping, indent=2, default=str)
-                    xml_content += "\n</fhir_bundle>"
-                    st.download_button(
-                        "📄 XML",
-                        xml_content,
-                        f"result_{filename}.xml",
-                        "application/xml",
-                        key=f"xml_{job_id}"
-                    )
-                else:
-                    st.text("XML not available")
+                        st.button("🔄 FHIR", disabled=True, help="FHIR export not available")
             else:
-                response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/xml")
-                if response.status_code == 200:
-                    st.download_button(
-                        "📄 XML",
-                        response.text,
-                        f"result_{filename}.xml",
-                        "application/xml",
-                        key=f"xml_{job_id}"
-                    )
-                else:
-                    st.text("XML not available")
+                st.button("🔄 FHIR", disabled=True, help="No FHIR mapping available")
         except Exception:
-            st.text("XML not available")
+            st.button("🔄 FHIR", disabled=True, help="FHIR export failed")
     
     # EDI Download
     with col3:
         try:
-            if IS_STREAMLIT_CLOUD:
-                # Use original content if available
-                if parsed_edi:
+            if parsed_edi:
+                if IS_STREAMLIT_CLOUD:
+                    # Generate EDI content from parsed data
                     if hasattr(parsed_edi, 'raw_content'):
                         edi_content = parsed_edi.raw_content
-                    elif isinstance(parsed_edi, dict):
-                        edi_content = parsed_edi.get('raw_content', str(parsed_edi))
+                    elif isinstance(parsed_edi, dict) and 'raw_content' in parsed_edi:
+                        edi_content = parsed_edi['raw_content']
                     else:
-                        edi_content = getattr(parsed_edi, 'raw_content', str(parsed_edi))
-                    
+                        edi_content = "EDI content not available"
+                        
                     st.download_button(
-                        "📄 EDI",
+                        "📝 EDI",
                         edi_content,
-                        f"result_{filename}.edi",
+                        f"processed_{filename}",
                         "text/plain",
-                        key=f"edi_{job_id}"
+                        key=f"edi_{job_id}",
+                        help="Download original EDI content"
                     )
                 else:
-                    st.text("EDI not available")
+                    response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/edi")
+                    if response.status_code == 200:
+                        st.download_button(
+                            "📝 EDI",
+                            response.text,
+                            f"processed_{filename}",
+                            "text/plain",
+                            key=f"edi_{job_id}",
+                            help="Download processed EDI content"
+                        )
+                    else:
+                        st.button("📝 EDI", disabled=True, help="EDI export not available")
             else:
-                response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/edi")
-                if response.status_code == 200:
-                    st.download_button(
-                        "📄 EDI",
-                        response.text,
-                        f"result_{filename}.edi",
-                        "text/plain",
-                        key=f"edi_{job_id}"
-                    )
-                else:
-                    st.text("EDI not available")
+                st.button("📝 EDI", disabled=True, help="No EDI data available")
         except Exception:
-            st.text("EDI not available")
+            st.button("📝 EDI", disabled=True, help="EDI export failed")
     
-    # Validation Report
+    # Validation Report Download
     with col4:
         try:
             if validation_result:
-                # Generate validation report
-                report_content = generate_validation_report(validation_result, filename)
-                st.download_button(
-                    "📋 Report",
-                    report_content,
-                    f"validation_{filename}.json",
-                    "application/json",
-                    key=f"report_{job_id}"
-                )
+                if IS_STREAMLIT_CLOUD:
+                    # Generate validation report
+                    report_content = generate_validation_report(validation_result, filename)
+                    st.download_button(
+                        "📊 Report",
+                        report_content,
+                        f"validation_{filename}.txt",
+                        "text/plain",
+                        key=f"report_{job_id}",
+                        help="Download validation report"
+                    )
+                else:
+                    response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/validation")
+                    if response.status_code == 200:
+                        st.download_button(
+                            "📊 Report",
+                            response.text,
+                            f"validation_{filename}.json",
+                            "application/json",
+                            key=f"report_{job_id}",
+                            help="Download validation report"
+                        )
+                    else:
+                        st.button("📊 Report", disabled=True, help="Report not available")
             else:
-                st.text("Report not available")
+                st.button("📊 Report", disabled=True, help="No validation data available")
         except Exception:
-            st.text("Report not available")
+            st.button("📊 Report", disabled=True, help="Report generation failed")
+    
+    # Additional download info
+    st.info("💡 **Download Guide:**\n"
+           "- **JSON**: Complete processing results in JSON format\n"
+           "- **FHIR**: Healthcare data in FHIR format for interoperability\n"
+           "- **EDI**: Original or processed EDI X12 278 document\n"
+           "- **Report**: Detailed validation and analysis report")
 
 
 def generate_validation_report(validation_result, filename):

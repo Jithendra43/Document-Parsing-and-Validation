@@ -99,15 +99,29 @@ class X12To278FHIRMapper:
             # Convert to dict for JSON serialization
             fhir_json = bundle.dict()
             
+            # Create FHIRMapping object for compatibility
+            from .models import FHIRMapping, FHIRResource
+            
+            # Extract resources from bundle
+            fhir_resources = []
+            for entry in bundle.entry:
+                resource = entry.resource
+                fhir_resources.append(FHIRResource(
+                    resource_type=resource.resource_type,
+                    id=resource.id,
+                    data=resource.dict()
+                ))
+            
+            fhir_mapping = FHIRMapping(
+                resources=fhir_resources,
+                mapping_version="1.0",
+                mapped_at=datetime.utcnow(),
+                source_segments=[seg.segment_id for seg in edi_data.segments[:10]]  # First 10 segments
+            )
+            
             self.logger.info("Successfully mapped X12 278 to FHIR CoverageEligibilityRequest")
             
-            return FHIRMappingResult(
-                fhir_bundle=fhir_json,
-                resource_count=len(bundle.entry),
-                mapping_warnings=[],
-                is_valid=True,
-                generated_at=datetime.utcnow()
-            )
+            return fhir_mapping
             
         except Exception as e:
             self.logger.error(f"FHIR mapping failed: {str(e)}")
@@ -226,7 +240,7 @@ class X12To278FHIRMapper:
                 status="active",
                 kind="insurance",  # Required field
                 beneficiary=Reference(reference=f"Patient/{patient.id}"),
-                insurer=insurance_org_ref,  # Fixed: Single Reference, not list
+                insurer=insurance_org_ref,  # Single Reference object
                 type=CodeableConcept(
                     coding=[
                         Coding(
