@@ -1,0 +1,72 @@
+# Core Streamlit and Web Framework
+streamlit>=1.28.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# EDI Processing Libraries
+# Using more modern pyx12 fork for better Python compatibility
+git+https://github.com/azoner/pyx12.git
+
+# FHIR and Healthcare Standards
+fhir.resources>=7.0.0
+hl7-fhir-r4-core>=4.3.0
+
+# AI and Machine Learning
+groq>=0.4.0
+openai>=1.0.0  # Backup AI provider
+
+# Data Processing and Validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Async and Performance
+asyncio-throttle>=1.0.0
+aiofiles>=23.0.0
+
+# Logging and Monitoring
+structlog>=23.0.0
+python-json-logger>=2.0.0
+
+# Web and API
+requests>=2.31.0
+httpx>=0.25.0
+
+# Data Visualization
+plotly>=5.17.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+click>=8.1.0
+rich>=13.0.0
+
+# File Processing
+openpyxl>=3.1.0
+xlsxwriter>=3.1.0
+
+# Date and Time
+python-dateutil>=2.8.0
+
+# Development and Testing (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+flake8>=6.0.0
+
+# Security
+cryptography>=41.0.0
+bcrypt>=4.0.0
+
+# Optional: Database support
+sqlalchemy>=2.0.0
+sqlite3  # Built-in Python
+
+# Optional: Redis for caching
+redis>=5.0.0
+
+# Platform-specific wheels (Windows compatibility)
+pywin32>=306; sys_platform == "win32" 

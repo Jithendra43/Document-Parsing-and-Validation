@@ -118,14 +118,15 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# EDI Processing specific
+# EDI Processing specific (exclude sample/test EDI files but allow requirements)
 uploads/
 outputs/
 temp/
 logs/
 *.edi
 *.x12
-*.txt
+test_*.txt
+sample_*.txt
 
 # IDE
 .vscode/
@@ -147,4 +148,9 @@ Thumbs.db
 .streamlit/secrets.toml
 
 # Local configuration
-config.local.py 
+config.local.py
+
+# Allow important configuration files
+!requirements*.txt
+!runtime.txt
+!env_example.txt 
