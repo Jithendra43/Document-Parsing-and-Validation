@@ -1,0 +1,41 @@
+# Streamlit Cloud Deployment Requirements
+# Core Framework
+streamlit>=1.28.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# Essential Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Data Visualization (Required for streamlit_app.py)
+plotly>=5.17.0
+
+# EDI Processing - Use pip installable version for Streamlit Cloud
+pyx12>=2.3.3
+
+# FHIR and Healthcare Standards
+fhir.resources>=7.0.0
+
+# AI Integration
+groq>=0.4.0
+
+# Data Validation
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# HTTP Requests
+requests>=2.31.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-dateutil>=2.8.0
+
+# Logging (simplified)
+structlog>=23.0.0
+
+# File Processing
+python-multipart>=0.0.6
+
+# Async Support
+aiofiles>=23.0.0 
