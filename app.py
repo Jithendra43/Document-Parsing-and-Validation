@@ -48,6 +48,18 @@ IS_STREAMLIT_CLOUD = ("streamlit.io" in os.getenv("STREAMLIT_SERVER_ADDRESS", ""
                       "streamlit.app" in os.getenv("STREAMLIT_SERVER_ADDRESS", "") or
                       not os.getenv("API_BASE_URL"))
 
+# Helper function for Pydantic v2 compatibility
+def safe_model_dump(obj):
+    """Safely convert Pydantic object to dict using model_dump or dict method."""
+    if hasattr(obj, 'model_dump'):
+        return obj.model_dump()
+    elif hasattr(obj, 'dict'):
+        return obj.dict()
+    elif isinstance(obj, dict):
+        return obj
+    else:
+        return obj
+
 # Initialize processing service for cloud mode
 if IS_STREAMLIT_CLOUD and HAS_LOCAL_PROCESSING:
     try:
@@ -470,9 +482,22 @@ async def process_with_embedded_service(content, filename, validate_only, enable
 def display_processing_results(result, filename):
     """Display comprehensive processing results with all advanced features."""
     
-    # Get job details
-    job_id = result.get("job_id")
-    status = result.get("status", "unknown")
+    # Handle both dict and ProcessingJob objects
+    if hasattr(result, 'model_dump') or hasattr(result, 'dict'):
+        # Pydantic object
+        job_id = result.job_id
+        status = result.status
+        job_details = result
+    elif isinstance(result, dict):
+        # Dictionary
+        job_id = result.get("job_id")
+        status = result.get("status", "unknown")
+        job_details = result
+    else:
+        # Object with attributes
+        job_id = getattr(result, 'job_id', None)
+        status = getattr(result, 'status', 'unknown')
+        job_details = result
     
     # Status display
     if status == "completed":
@@ -482,9 +507,8 @@ def display_processing_results(result, filename):
     else:
         st.info(f"📋 Processing {status} for {filename}")
     
-    # Get detailed job information
-    job_details = None
-    if job_id:
+    # Get detailed job information if not already available
+    if not job_details and job_id:
         if IS_STREAMLIT_CLOUD and job_id in st.session_state.get('jobs', {}):
             # Get from session state (embedded mode)
             job_details = st.session_state['jobs'][job_id]
@@ -501,18 +525,32 @@ def display_processing_results(result, filename):
         st.warning("No detailed results available")
         return
     
+    # Extract data from job_details (handle both dict and object)
+    if hasattr(job_details, 'model_dump') or hasattr(job_details, 'dict'):
+        # Pydantic object
+        validation_result = job_details.validation_result
+        ai_analysis = job_details.ai_analysis
+        fhir_mapping = job_details.fhir_mapping
+    elif isinstance(job_details, dict):
+        # Dictionary
+        validation_result = job_details.get("validation_result")
+        ai_analysis = job_details.get("ai_analysis")
+        fhir_mapping = job_details.get("fhir_mapping")
+    else:
+        # Object with attributes
+        validation_result = getattr(job_details, 'validation_result', None)
+        ai_analysis = getattr(job_details, 'ai_analysis', None)
+        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+    
     # Validation Results Section
-    validation_result = job_details.get("validation_result")
     if validation_result:
         display_validation_section(validation_result, job_id)
     
     # AI Analysis Section
-    ai_analysis = job_details.get("ai_analysis")
     if ai_analysis:
         display_ai_analysis_section(ai_analysis)
     
     # FHIR Mapping Section
-    fhir_mapping = job_details.get("fhir_mapping")
     if fhir_mapping and status == "completed":
         display_fhir_section(fhir_mapping)
     
@@ -526,8 +564,8 @@ def display_validation_section(validation_result, job_id):
     st.subheader("📋 Validation Results")
     
     # Extract validation data with error handling
-    if hasattr(validation_result, 'dict'):
-        val_data = validation_result.dict()
+    if hasattr(validation_result, 'model_dump') or hasattr(validation_result, 'dict'):
+        val_data = safe_model_dump(validation_result)
     elif isinstance(validation_result, dict):
         val_data = validation_result
     else:
@@ -564,8 +602,8 @@ def display_validation_section(validation_result, job_id):
         st.subheader(f"🔍 Validation Issues ({len(issues)} found)")
         
         # Convert issues to DataFrame
-        if hasattr(issues[0], 'dict'):
-            issues_data = [issue.dict() for issue in issues]
+        if issues and (hasattr(issues[0], 'model_dump') or hasattr(issues[0], 'dict')):
+            issues_data = [safe_model_dump(issue) for issue in issues]
         else:
             issues_data = issues
         
@@ -752,12 +790,36 @@ def display_download_section(job_id, filename, job_details):
     
     col1, col2, col3, col4 = st.columns(4)
     
+    # Extract data from job_details (handle both dict and object)
+    if hasattr(job_details, 'dict'):
+        # Pydantic object
+        job_dict = job_details.dict()
+        fhir_mapping = job_details.fhir_mapping
+        parsed_edi = job_details.parsed_edi
+        validation_result = job_details.validation_result
+    elif isinstance(job_details, dict):
+        # Dictionary
+        job_dict = job_details
+        fhir_mapping = job_details.get('fhir_mapping')
+        parsed_edi = job_details.get('parsed_edi')
+        validation_result = job_details.get('validation_result')
+    else:
+        # Object with attributes
+        job_dict = {
+            'job_id': getattr(job_details, 'job_id', job_id),
+            'filename': getattr(job_details, 'filename', filename),
+            'status': getattr(job_details, 'status', 'unknown')
+        }
+        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+        parsed_edi = getattr(job_details, 'parsed_edi', None)
+        validation_result = getattr(job_details, 'validation_result', None)
+    
     # JSON Download
     with col1:
         try:
             if IS_STREAMLIT_CLOUD:
                 # Generate JSON from job details
-                json_content = json.dumps(job_details, indent=2, default=str)
+                json_content = json.dumps(job_dict, indent=2, default=str)
                 st.download_button(
                     "📄 JSON",
                     json_content,
@@ -785,11 +847,13 @@ def display_download_section(job_id, filename, job_details):
         try:
             if IS_STREAMLIT_CLOUD:
                 # Generate XML from FHIR data
-                fhir_mapping = job_details.get('fhir_mapping')
                 if fhir_mapping:
                     # Simple XML generation
                     xml_content = "<fhir_bundle>\n"
-                    xml_content += json.dumps(fhir_mapping, indent=2, default=str)
+                    if hasattr(fhir_mapping, 'dict'):
+                        xml_content += json.dumps(fhir_mapping.dict(), indent=2, default=str)
+                    else:
+                        xml_content += json.dumps(fhir_mapping, indent=2, default=str)
                     xml_content += "\n</fhir_bundle>"
                     st.download_button(
                         "📄 XML",
@@ -820,9 +884,14 @@ def display_download_section(job_id, filename, job_details):
         try:
             if IS_STREAMLIT_CLOUD:
                 # Use original content if available
-                parsed_edi = job_details.get('parsed_edi')
                 if parsed_edi:
-                    edi_content = getattr(parsed_edi, 'raw_content', str(parsed_edi))
+                    if hasattr(parsed_edi, 'raw_content'):
+                        edi_content = parsed_edi.raw_content
+                    elif isinstance(parsed_edi, dict):
+                        edi_content = parsed_edi.get('raw_content', str(parsed_edi))
+                    else:
+                        edi_content = getattr(parsed_edi, 'raw_content', str(parsed_edi))
+                    
                     st.download_button(
                         "📄 EDI",
                         edi_content,
@@ -850,7 +919,6 @@ def display_download_section(job_id, filename, job_details):
     # Validation Report
     with col4:
         try:
-            validation_result = job_details.get('validation_result')
             if validation_result:
                 # Generate validation report
                 report_content = generate_validation_report(validation_result, filename)
@@ -1610,11 +1678,36 @@ def get_statistics():
     if 'jobs' in st.session_state:
         jobs = st.session_state['jobs']
         total_files = len(jobs)
-        completed_jobs = [job for job in jobs.values() if getattr(job, 'status', 'unknown') == 'completed']
-        failed_jobs = [job for job in jobs.values() if getattr(job, 'status', 'unknown') == 'failed']
         
-        successful = len(completed_jobs)
-        failed = len(failed_jobs)
+        # Count truly successful jobs (completed AND valid)
+        successful = 0
+        failed = 0
+        
+        for job in jobs.values():
+            job_status = getattr(job, 'status', 'unknown')
+            
+            if job_status == 'completed':
+                # Check if validation was actually successful
+                validation_result = getattr(job, 'validation_result', None)
+                if validation_result:
+                    # Handle both dict and object validation results
+                    if hasattr(validation_result, 'is_valid'):
+                        is_valid = validation_result.is_valid
+                    elif isinstance(validation_result, dict):
+                        is_valid = validation_result.get('is_valid', False)
+                    else:
+                        is_valid = getattr(validation_result, 'is_valid', False)
+                    
+                    if is_valid:
+                        successful += 1
+                    else:
+                        failed += 1  # Completed but invalid = failed
+                else:
+                    # No validation result = failed
+                    failed += 1
+            else:
+                failed += 1
+        
         success_rate = (successful / total_files * 100) if total_files > 0 else 0
         
         # Calculate average processing time
@@ -1625,13 +1718,33 @@ def get_statistics():
         
         avg_time = sum(processing_times) / len(processing_times) if processing_times else 0
         
+        # Collect common errors
+        common_errors = []
+        for job in jobs.values():
+            error_msg = getattr(job, 'error_message', None)
+            if error_msg:
+                # Extract key error types
+                if 'pyx12' in error_msg.lower():
+                    common_errors.append('pyx12 parsing errors')
+                elif 'fhir' in error_msg.lower():
+                    common_errors.append('FHIR mapping errors')
+                elif 'validation' in error_msg.lower():
+                    common_errors.append('Validation errors')
+                else:
+                    common_errors.append('Processing errors')
+        
+        # Get most common errors (top 3)
+        from collections import Counter
+        error_counts = Counter(common_errors)
+        most_common = [error for error, count in error_counts.most_common(3)]
+        
         return {
             "total_files_processed": total_files,
             "successful_conversions": successful,
             "failed_conversions": failed,
             "success_rate": success_rate,
             "average_processing_time": avg_time,
-            "most_common_errors": [],
+            "most_common_errors": most_common,
             "last_updated": datetime.now().isoformat()
         }
     
