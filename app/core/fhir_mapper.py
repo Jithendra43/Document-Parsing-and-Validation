@@ -78,9 +78,9 @@ class X12To278FHIRMapper:
             
             # Map core resources
             patient = self._map_patient(edi_data)
-            coverage = self._map_coverage(edi_data, patient)
             organization = self._map_organization(edi_data)
             practitioner = self._map_practitioner(edi_data)
+            coverage = self._map_coverage(edi_data, patient, organization)
             
             # Create CoverageEligibilityRequest (main resource for 278)
             coverage_eligibility_request = self._map_coverage_eligibility_request(
@@ -106,10 +106,11 @@ class X12To278FHIRMapper:
             fhir_resources = []
             for entry in bundle.entry:
                 resource = entry.resource
+                resource_dict = resource.dict()
                 fhir_resources.append(FHIRResource(
-                    resource_type=resource.resource_type,
+                    resource_type=resource_dict.get('resourceType', resource.__class__.__name__),
                     id=resource.id,
-                    data=resource.dict()
+                    data=resource_dict
                 ))
             
             fhir_mapping = FHIRMapping(
@@ -191,7 +192,7 @@ class X12To278FHIRMapper:
             self.logger.error(f"Failed to map patient: {str(e)}")
             raise FHIRMappingError(f"Patient mapping failed: {str(e)}")
     
-    def _map_coverage(self, edi_data, patient: Patient) -> Coverage:
+    def _map_coverage(self, edi_data, patient: Patient, organization: Organization) -> Coverage:
         """Map EDI data to FHIR Coverage resource."""
         try:
             logger.info("Mapping Coverage resource")
@@ -226,10 +227,10 @@ class X12To278FHIRMapper:
                 logger.warning("No insurance information found, using default")
                 insurance_info = {'elements': ['NM1', 'PR', '2', 'DEFAULT_INSURANCE']}
             
-            # Create insurance organization reference
+            # Create insurance organization reference using the actual organization ID
             insurance_org_ref = Reference(
-                reference=f"Organization/{str(uuid.uuid4())}",
-                display=insurance_info['elements'][3] if len(insurance_info['elements']) > 3 else "Insurance Company"
+                reference=f"Organization/{organization.id}",
+                display=organization.name or "Insurance Company"
             )
             
             coverage = Coverage(
@@ -240,7 +241,7 @@ class X12To278FHIRMapper:
                 status="active",
                 kind="insurance",  # Required field
                 beneficiary=Reference(reference=f"Patient/{patient.id}"),
-                insurer=insurance_org_ref,  # Single Reference object
+                insurer=insurance_org_ref,  # Ensure single Reference object
                 type=CodeableConcept(
                     coding=[
                         Coding(
@@ -378,6 +379,7 @@ class X12To278FHIRMapper:
             
             # Create CoverageEligibilityRequest
             request = CoverageEligibilityRequest(
+                id=str(uuid.uuid4()),
                 status="active",
                 priority=CodeableConcept(
                     coding=[Coding(

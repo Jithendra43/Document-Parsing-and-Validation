@@ -462,6 +462,20 @@ class EDI278Parser:
                         })
                         
                         logger.debug(f"Manual parsed: {tag} with {len(elements)} elements")
+                else:
+                    # Handle segments without '*' (malformed but try to salvage)
+                    cleaned_segment = segment_raw.strip()
+                    if len(cleaned_segment) >= 2:
+                        # Try to extract at least a segment ID
+                        tag = cleaned_segment[:3] if len(cleaned_segment) >= 3 else cleaned_segment
+                        if tag.isalnum():
+                            segments.append({
+                                'tag': tag,
+                                'elements': [],
+                                'raw': segment_raw,
+                                'position': position
+                            })
+                            logger.debug(f"Manual parsed malformed: {tag}")
                 
                 if position >= self.max_segments:
                     logger.warning(f"Reached manual parsing segment limit: {self.max_segments}")

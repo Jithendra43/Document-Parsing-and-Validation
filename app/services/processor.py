@@ -182,52 +182,100 @@ class EDIProcessingService:
         )
         
         self.jobs[job_id] = job
+        error_details = []
         
         try:
-            logger.info(f"[{job_id}] Starting content processing")
+            logger.info(f"[{job_id}] Starting content processing for {upload_request.filename}")
             
             # Parse EDI content directly
-            job.parsed_edi = await self._parse_edi_content(content, upload_request.filename)
+            try:
+                job.parsed_edi = await self._parse_edi_content(content, upload_request.filename)
+                logger.info(f"[{job_id}] EDI parsing completed: {len(job.parsed_edi.segments)} segments")
+            except Exception as e:
+                error_details.append(f"EDI parsing failed: {str(e)}")
+                logger.error(f"[{job_id}] EDI parsing failed: {str(e)}")
+                job.parsed_edi = None
             
-            # Validate
-            job.validation_result = await self._validate_edi(job.parsed_edi, upload_request)
+            # Validate (only if parsing succeeded)
+            if job.parsed_edi:
+                try:
+                    job.validation_result = await self._validate_edi(job.parsed_edi, upload_request)
+                    logger.info(f"[{job_id}] Validation completed: valid={job.validation_result.is_valid}")
+                except Exception as e:
+                    error_details.append(f"Validation failed: {str(e)}")
+                    logger.error(f"[{job_id}] Validation failed: {str(e)}")
+                    job.validation_result = None
+            else:
+                error_details.append("Validation skipped due to parsing failure")
+                job.validation_result = None
             
-            # Map to FHIR if not validation-only
-            if not upload_request.validate_only:
+            # Map to FHIR if not validation-only and parsing succeeded
+            if not upload_request.validate_only and job.parsed_edi:
                 try:
                     job.fhir_mapping = await self._map_to_fhir(job.parsed_edi)
-                    logger.info(f"[{job_id}] FHIR mapping completed successfully")
+                    logger.info(f"[{job_id}] FHIR mapping completed: {len(job.fhir_mapping.resources)} resources")
                 except Exception as e:
-                    logger.warning(f"[{job_id}] FHIR mapping failed: {str(e)} - continuing without FHIR mapping")
+                    error_details.append(f"FHIR mapping failed: {str(e)}")
+                    logger.error(f"[{job_id}] FHIR mapping failed: {str(e)}")
                     job.fhir_mapping = None
+            elif upload_request.validate_only:
+                logger.info(f"[{job_id}] FHIR mapping skipped (validation-only mode)")
+            else:
+                error_details.append("FHIR mapping skipped due to parsing failure")
+                job.fhir_mapping = None
             
             # AI analysis if enabled and available
-            if upload_request.enable_ai_analysis and self.ai_analyzer.is_available:
+            if upload_request.enable_ai_analysis and self.ai_analyzer.is_available and job.parsed_edi and job.validation_result:
                 try:
                     job.ai_analysis = await self._analyze_with_ai(job.parsed_edi, job.validation_result)
-                    logger.info(f"[{job_id}] AI analysis completed successfully")
+                    logger.info(f"[{job_id}] AI analysis completed: confidence={job.ai_analysis.confidence_score:.2f}")
                 except Exception as e:
-                    logger.warning(f"[{job_id}] AI analysis failed: {str(e)} - continuing without AI analysis")
+                    error_details.append(f"AI analysis failed: {str(e)}")
+                    logger.error(f"[{job_id}] AI analysis failed: {str(e)}")
                     job.ai_analysis = None
             elif upload_request.enable_ai_analysis and not self.ai_analyzer.is_available:
                 logger.info(f"[{job_id}] AI analysis requested but not available")
+                error_details.append("AI analysis not available")
+                job.ai_analysis = None
+            elif upload_request.enable_ai_analysis and not (job.parsed_edi and job.validation_result):
+                error_details.append("AI analysis skipped due to parsing or validation failure")
+                job.ai_analysis = None
             
-            # Complete job
-            job.status = ProcessingStatus.COMPLETED
+            # Determine final status
+            has_critical_failure = not job.parsed_edi
+            has_partial_success = job.parsed_edi is not None
+            
+            if has_critical_failure:
+                job.status = ProcessingStatus.FAILED
+                job.error_message = "Critical failure: " + "; ".join(error_details)
+            elif error_details and not has_partial_success:
+                job.status = ProcessingStatus.FAILED
+                job.error_message = "Processing failed: " + "; ".join(error_details)
+            elif error_details:
+                job.status = ProcessingStatus.COMPLETED  # Partial success
+                job.error_message = "Completed with warnings: " + "; ".join(error_details)
+            else:
+                job.status = ProcessingStatus.COMPLETED
+                job.error_message = None
+            
             job.completed_at = datetime.utcnow()
             job.processing_time = (job.completed_at - job.started_at).total_seconds()
             
             # Update statistics
             self.stats["total_files_processed"] += 1
-            self.stats["successful_conversions"] += 1
+            if job.status == ProcessingStatus.COMPLETED and not error_details:
+                self.stats["successful_conversions"] += 1
+            else:
+                self.stats["failed_conversions"] += 1
             self.stats["last_updated"] = datetime.utcnow()
             
-            logger.info(f"[{job_id}] Content processing completed successfully in {job.processing_time:.2f}s")
+            logger.info(f"[{job_id}] Processing completed with status {job.status} in {job.processing_time:.2f}s")
             return job
             
         except Exception as e:
+            # Catastrophic failure
             job.status = ProcessingStatus.FAILED
-            job.error_message = str(e)
+            job.error_message = f"Catastrophic processing failure: {str(e)}"
             job.completed_at = datetime.utcnow()
             job.processing_time = (job.completed_at - job.started_at).total_seconds() if job.started_at else 0
             
@@ -236,7 +284,7 @@ class EDIProcessingService:
             self.stats["failed_conversions"] += 1
             self.stats["last_updated"] = datetime.utcnow()
             
-            logger.error(f"[{job_id}] Content processing failed: {str(e)}")
+            logger.error(f"[{job_id}] Catastrophic processing failure: {str(e)}")
             return job
     
     async def _parse_edi_file(self, file_path: str) -> ParsedEDI:
@@ -311,9 +359,9 @@ class EDIProcessingService:
             return None
         
         try:
-            logger.info("🧠 Performing AI analysis...")
+            logger.info("Performing AI analysis...")
             ai_analysis = await self.ai_analyzer.analyze_edi(parsed_edi, validation_result)
-            logger.info(f"✅ AI analysis completed with confidence: {ai_analysis.confidence_score:.2f}")
+            logger.info(f"AI analysis completed with confidence: {ai_analysis.confidence_score:.2f}")
             return ai_analysis
         except AIAnalysisError as e:
             logger.warning(f"AI analysis failed with known error: {str(e)}")
@@ -327,34 +375,41 @@ class EDIProcessingService:
         try:
             # Run in thread pool for CPU-bound operation
             loop = asyncio.get_event_loop()
-            fhir_mapping_result = await loop.run_in_executor(
+            fhir_mapping = await loop.run_in_executor(
                 None, self.fhir_mapper.map_to_fhir, parsed_edi
             )
             
-            # Convert FHIRMappingResult to FHIRMapping
-            fhir_resources = []
-            if fhir_mapping_result.fhir_bundle and 'entry' in fhir_mapping_result.fhir_bundle:
-                for entry in fhir_mapping_result.fhir_bundle['entry']:
-                    resource_data = entry.get('resource', {})
-                    resource_type = resource_data.get('resourceType', 'Unknown')
-                    resource_id = resource_data.get('id', '')
-                    
-                    fhir_resources.append(FHIRResource(
-                        resource_type=resource_type,
-                        id=resource_id,
-                        data=resource_data
-                    ))
+            # The mapper now returns FHIRMapping directly
+            if isinstance(fhir_mapping, FHIRMapping):
+                logger.info(f"Successfully mapped {len(fhir_mapping.resources)} FHIR resources")
+                return fhir_mapping
+            else:
+                # Handle legacy FHIRMappingResult format if still returned
+                fhir_resources = []
+                if hasattr(fhir_mapping, 'fhir_bundle') and fhir_mapping.fhir_bundle and 'entry' in fhir_mapping.fhir_bundle:
+                    for entry in fhir_mapping.fhir_bundle['entry']:
+                        resource_data = entry.get('resource', {})
+                        resource_type = resource_data.get('resourceType', 'Unknown')
+                        resource_id = resource_data.get('id', '')
+                        
+                        fhir_resources.append(FHIRResource(
+                            resource_type=resource_type,
+                            id=resource_id,
+                            data=resource_data
+                        ))
+                
+                return FHIRMapping(
+                    resources=fhir_resources,
+                    mapping_version="1.0",
+                    mapped_at=getattr(fhir_mapping, 'generated_at', datetime.utcnow()),
+                    source_segments=[seg.segment_id for seg in parsed_edi.segments[:10]]
+                )
             
-            return FHIRMapping(
-                resources=fhir_resources,
-                mapping_version="1.0",
-                mapped_at=fhir_mapping_result.generated_at,
-                source_segments=[seg.segment_id for seg in parsed_edi.segments[:10]]
-            )
-            
-        except FHIRMappingError:
+        except FHIRMappingError as e:
+            logger.error(f"FHIR mapping failed: {str(e)}")
             raise
         except Exception as e:
+            logger.error(f"Unexpected FHIR mapping error: {str(e)}")
             raise EDIProcessingError(f"Failed to map to FHIR: {str(e)}")
     
     def get_job(self, job_id: str) -> Optional[ProcessingJob]:
