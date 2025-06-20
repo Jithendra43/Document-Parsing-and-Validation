@@ -1,137 +1,1710 @@
-"""Streamlit Cloud App - EDI X12 278 Processor"""
+"""Enhanced Streamlit frontend for EDI X12 278 Processing with cloud compatibility."""
 
 import streamlit as st
+import requests
+import json
+import pandas as pd
+from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
-import pandas as pd
-import json
-from datetime import datetime
+from pathlib import Path
+import io
+import os
+import uuid
+import asyncio
+import sys
+from typing import Dict, List, Optional, Any
 
+# Add app directory to path for imports
+if './app' not in sys.path:
+    sys.path.insert(0, './app')
+
+# Try to import local components for cloud-only mode
+try:
+    from app.core.edi_parser import EDI278Parser, EDI278Validator
+    from app.core.fhir_mapper import X12To278FHIRMapper
+    from app.ai.analyzer import EDIAIAnalyzer
+    from app.services.processor import EDIProcessingService
+    from app.config import settings
+    HAS_LOCAL_PROCESSING = True
+except ImportError as e:
+    HAS_LOCAL_PROCESSING = False
+    print(f"Local processing not available: {e}")
+
+# Page config
 st.set_page_config(
     page_title="EDI X12 278 Processor",
     page_icon="🏥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-def main():
-    st.title("🏥 EDI X12 278 Processor")
-    st.markdown("**AI-powered EDI processing with FHIR mapping and validation**")
-    
-    tab1, tab2, tab3 = st.tabs(["📋 Overview", "📤 Demo", "📊 Analytics"])
-    
-    with tab1:
-        show_overview()
-    
-    with tab2:
-        show_demo()
-    
-    with tab3:
-        show_analytics()
+# Configuration
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+SUPPORTED_FORMATS = [".edi", ".txt", ".x12"]
 
-def show_overview():
-    st.header("System Overview")
+# Check deployment mode
+IS_STREAMLIT_CLOUD = ("streamlit.io" in os.getenv("STREAMLIT_SERVER_ADDRESS", "") or 
+                      "streamlit.app" in os.getenv("STREAMLIT_SERVER_ADDRESS", "") or
+                      not os.getenv("API_BASE_URL"))
+
+# Initialize processing service for cloud mode
+if IS_STREAMLIT_CLOUD and HAS_LOCAL_PROCESSING:
+    try:
+        processing_service = EDIProcessingService()
+        st.session_state['processing_service'] = processing_service
+    except Exception as e:
+        processing_service = None
+        print(f"Could not initialize processing service: {e}")
+else:
+    processing_service = None
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    .success-box {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #c3e6cb;
+    }
+    .error-box {
+        background-color: #f8d7da;
+        color: #721c24;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #f5c6cb;
+    }
+    .warning-box {
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border: 1px solid #ffeeba;
+    }
+    .cloud-mode {
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 0.5rem 1rem;
+        border-radius: 0.25rem;
+        margin-bottom: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+def main():
+    """Main Streamlit application."""
+    
+    # Header
+    st.markdown('<h1 class="main-header">🏥 EDI X12 278 Processor</h1>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center;"><strong>AI-powered EDI processing with FHIR mapping and validation</strong></p>', unsafe_allow_html=True)
+    
+    # Show deployment mode
+    if IS_STREAMLIT_CLOUD:
+        st.markdown('<div class="cloud-mode">☁️ <strong>Cloud Mode</strong> - Enhanced with embedded processing</div>', unsafe_allow_html=True)
+    
+    # Sidebar navigation
+    st.sidebar.title("Navigation")
+    page = st.sidebar.selectbox(
+        "Choose a page",
+        ["🏠 Home", "📤 Upload & Process", "🔍 Validate Only", "📊 Dashboard", "📋 Job History", "⚙️ Settings"]
+    )
+    
+    # Check system health
+    if not IS_STREAMLIT_CLOUD:
+        health_status = check_api_health()
+        if not health_status["healthy"]:
+            st.error("⚠️ API service is unavailable. Switching to embedded processing mode.")
+            st.session_state['force_embedded'] = True
+    
+    # Route to different pages
+    if page == "🏠 Home":
+        show_home_page()
+    elif page == "📤 Upload & Process":
+        show_upload_page()
+    elif page == "🔍 Validate Only":
+        show_validation_page()
+    elif page == "📊 Dashboard":
+        show_dashboard_page()
+    elif page == "📋 Job History":
+        show_job_history_page()
+    elif page == "⚙️ Settings":
+        show_settings_page()
+
+
+def check_api_health():
+    """Check if the API is healthy."""
+    if IS_STREAMLIT_CLOUD:
+        return {"healthy": True, "mode": "embedded"}
+    
+    try:
+        response = requests.get(f"{API_BASE_URL}/health", timeout=5)
+        if response.status_code == 200:
+            return {"healthy": True, "data": response.json()}
+        else:
+            return {"healthy": False, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"healthy": False, "error": str(e)}
+
+
+def show_home_page():
+    """Show the home page with overview and getting started."""
     
     col1, col2 = st.columns([2, 1])
     
     with col1:
+        st.header("Welcome to the EDI X12 278 Processor")
+        
         st.markdown("""
-        ## Features
+        This application provides comprehensive processing of X12 278 (Prior Authorization) EDI transactions with:
         
-        ✅ **EDI Processing**: Industry-standard pyx12 parsing  
-        ✅ **AI Analysis**: Groq-powered intelligent insights  
-        ✅ **FHIR Mapping**: Da Vinci PAS Implementation Guide  
-        ✅ **Validation**: TR3 compliance checking  
-        ✅ **Export Options**: JSON, XML, EDI formats  
+        ✅ **Structural validation** against X12 standards  
+        ✅ **TR3 compliance checking** for healthcare transactions  
+        ✅ **AI-powered anomaly detection** using Groq/Llama 3  
+        ✅ **FHIR mapping** to modern healthcare standards  
+        ✅ **Real-time processing** with detailed reporting  
+        ✅ **Cloud-native deployment** with embedded processing
         
-        ## Deployment Ready
-        
-        This system is designed for:
-        - Local development environments
-        - Docker containerization  
-        - Streamlit Cloud deployment
-        - Enterprise server hosting
+        ### Getting Started
+        1. Use **Upload & Process** to convert EDI files to FHIR
+        2. Use **Validate Only** to check file compliance and TR3 standards
+        3. Monitor progress in the **Dashboard**
+        4. Review detailed results in **Job History**
+        5. Download results in JSON, XML, or EDI formats
         """)
+        
+        # Feature highlights
+        st.subheader("🎯 Key Features")
+        features = [
+            "📋 **Comprehensive Validation**: Full X12 278 structural validation with TR3 compliance checking",
+            "🤖 **AI Analysis**: Advanced anomaly detection and intelligent suggestions using Groq/Llama 3",
+            "🔄 **FHIR Mapping**: Convert X12 278 to FHIR CoverageEligibilityRequest resources",
+            "📊 **Detailed Results**: Comprehensive tables with issue tracking and justifications",
+            "💾 **Export Options**: Download results in JSON, XML, or EDI formats",
+            "📈 **Analytics Dashboard**: Real-time monitoring and processing statistics"
+        ]
+        
+        for feature in features:
+            st.markdown(feature)
     
     with col2:
-        st.success("✅ System Ready")
-        st.metric("Version", "1.0.0")
-        st.metric("Python", "3.9+")
-        st.metric("Framework", "Streamlit")
+        st.subheader("System Status")
+        
+        if IS_STREAMLIT_CLOUD:
+            st.success("☁️ Cloud Mode Active")
+            st.info("✨ Enhanced with embedded processing")
+            
+            # Show available components
+            st.markdown("**Available Components:**")
+            if HAS_LOCAL_PROCESSING:
+                st.write("✅ EDI Parser: Available")
+                st.write("✅ Validator: Available") 
+                st.write("✅ FHIR Mapper: Available")
+                st.write("✅ AI Analyzer: Available")
+            else:
+                st.write("⚠️ Some components may be limited")
+        else:
+            health = check_api_health()
+            
+            if health["healthy"]:
+                health_data = health.get("data", {})
+                st.success("✅ System Healthy")
+                
+                st.markdown("**Components:**")
+                components = health_data.get("components", {})
+                for component, status in components.items():
+                    icon = "✅" if status == "healthy" else "⚠️"
+                    st.write(f"{icon} {component.title()}: {status}")
+            else:
+                st.error(f"❌ System Unhealthy: {health['error']}")
+        
+        # Quick links
+        st.subheader("Quick Actions")
+        if st.button("🚀 Process Sample File"):
+            st.session_state['sample_demo'] = True
+            st.rerun()
+        
+        if st.button("📖 View Documentation"):
+            st.info("Documentation available in the repository README.md")
 
-def show_demo():
-    st.header("🚀 Processing Demo")
-    
-    sample_edi = """ISA*00*          *00*          *ZZ*SENDER_ID     *ZZ*RECEIVER_ID   *250620*1909*U*00501*000000001*0*P*>~
-GS*HS*SENDER_ID*RECEIVER_ID*20250620*1909*1*X*005010X217~
-ST*278*0001*005010X217~
-BHT*0078*00*1234567890*20250620*1909*01~
-HL*1**20*1~
-NM1*PR*2*SAMPLE INSURANCE*****PI*12345~
-HL*2*1*21*1~
-NM1*1P*2*SAMPLE PROVIDER*****XX*1234567890~
-SE*8*0001~
-GE*1*1~
-IEA*1*000000001~"""
-    
-    st.subheader("Sample EDI Content")
-    st.code(sample_edi, language="text")
-    
-    if st.button("🔍 Analyze Sample"):
-        show_demo_results()
 
-def show_demo_results():
-    st.success("✅ Processing Complete!")
+def show_upload_page():
+    """Show the file upload and processing page with enhanced features."""
     
-    col1, col2, col3, col4 = st.columns(4)
+    st.header("📤 Upload & Process EDI Files")
+    st.markdown("Upload X12 278 EDI files for comprehensive processing and validation")
     
-    with col1:
-        st.metric("Segments", "10")
-    with col2:
-        st.metric("Validation", "✅ Pass")
-    with col3:
-        st.metric("AI Confidence", "0.85")
-    with col4:
-        st.metric("FHIR Resources", "5")
+    # File upload section
+    uploaded_file = st.file_uploader(
+        "Choose an EDI file",
+        type=["edi", "txt", "x12"],
+        help="Upload X12 278 EDI files for processing"
+    )
     
-    # Demo chart
-    segments = ["ISA", "GS", "ST", "BHT", "HL", "NM1", "SE", "GE", "IEA"]
-    counts = [1, 1, 1, 1, 2, 2, 1, 1, 1]
-    
-    fig = px.bar(x=segments, y=counts, title="Segment Distribution")
-    st.plotly_chart(fig, use_container_width=True)
-
-def show_analytics():
-    st.header("📊 Analytics Dashboard")
-    
-    # Sample metrics
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Files Processed", "1,247", "12%")
-    with col2:
-        st.metric("Success Rate", "94.2%", "2.1%")
-    with col3:
-        st.metric("Avg Time", "2.1s", "-0.3s")
-    with col4:
-        st.metric("AI Coverage", "87%", "5%")
-    
-    # Sample time series
-    dates = pd.date_range('2024-01-01', periods=30, freq='D')
-    data = pd.DataFrame({
-        'Date': dates,
-        'Files': [50 + i*2 + (i%7)*10 for i in range(30)],
-        'Success_Rate': [90 + (i%10) for i in range(30)]
-    })
-    
+    # Processing options
+    st.subheader("⚙️ Processing Options")
     col1, col2 = st.columns(2)
     
     with col1:
-        fig1 = px.line(data, x='Date', y='Files', title='Daily Processing Volume')
-        st.plotly_chart(fig1, use_container_width=True)
+        st.markdown("**Processing Mode**")
+        validate_only = st.checkbox("Validation Only", value=False, 
+                                  help="Only validate the file without conversion")
+        enable_ai_analysis = st.checkbox("Enable AI Analysis", value=True,
+                                       help="Use AI for anomaly detection and smart suggestions")
     
     with col2:
-        fig2 = px.line(data, x='Date', y='Success_Rate', title='Success Rate Trend')
-        st.plotly_chart(fig2, use_container_width=True)
+        st.markdown("**Output Format**")
+        output_format = st.selectbox(
+            "Choose format",
+            ["fhir", "json", "xml"],
+            help="Choose the output format for conversion"
+        )
+        
+        tr3_strict = st.checkbox("Strict TR3 Validation", value=False,
+                                help="Enable strict TR3 compliance checking")
+    
+    # Advanced options
+    with st.expander("🔧 Advanced Options"):
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            max_issues = st.slider("Max Issues to Show", 10, 100, 50,
+                                 help="Maximum number of validation issues to display")
+            
+        with col4:
+            confidence_threshold = st.slider("AI Confidence Threshold", 0.0, 1.0, 0.7, 0.1,
+                                           help="Minimum confidence score for AI suggestions")
+    
+    # Process button
+    process_disabled = uploaded_file is None
+    button_text = "Process File" if not validate_only else "Validate File"
+    
+    if st.button(button_text, type="primary", disabled=process_disabled):
+        if uploaded_file is not None:
+            process_uploaded_file(uploaded_file, validate_only, enable_ai_analysis, output_format, {
+                'tr3_strict': tr3_strict,
+                'max_issues': max_issues,
+                'confidence_threshold': confidence_threshold
+            })
+    
+    # Sample file section
+    st.subheader("📝 Don't have a sample file?")
+    col_sample1, col_sample2 = st.columns(2)
+    
+    with col_sample1:
+        if st.button("Generate Sample EDI"):
+            sample_content = generate_sample_edi()
+            st.code(sample_content, language="text")
+            st.download_button(
+                "Download Sample",
+                sample_content,
+                "sample_278.edi",
+                "text/plain"
+            )
+    
+    with col_sample2:
+        if st.button("🚀 Try Demo Processing"):
+            demo_content = generate_sample_edi()
+            st.session_state['demo_content'] = demo_content
+            st.session_state['demo_mode'] = True
+            # Auto-process demo
+            process_demo_content(demo_content, validate_only, enable_ai_analysis, output_format)
+
+
+async def process_uploaded_file(uploaded_file, validate_only, enable_ai_analysis, output_format, options=None):
+    """Process the uploaded file with enhanced error handling."""
+    
+    options = options or {}
+    
+    # Show processing message
+    with st.spinner("Processing file..."):
+        try:
+            # Read file content
+            content = uploaded_file.read().decode('utf-8')
+            
+            # Choose processing method
+            if IS_STREAMLIT_CLOUD or st.session_state.get('force_embedded', False):
+                # Use embedded processing
+                result = await process_with_embedded_service(content, uploaded_file.name, 
+                                                           validate_only, enable_ai_analysis, 
+                                                           output_format, options)
+            else:
+                # Use API processing
+                result = await process_with_api(content, uploaded_file.name, 
+                                              validate_only, enable_ai_analysis, 
+                                              output_format)
+            
+            if result:
+                display_processing_results(result, uploaded_file.name)
+            else:
+                st.error("Processing failed - no result returned")
+                
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+            st.exception(e)
+
+
+def process_demo_content(content, validate_only, enable_ai_analysis, output_format):
+    """Process demo content synchronously."""
+    try:
+        if IS_STREAMLIT_CLOUD and HAS_LOCAL_PROCESSING:
+            # Use embedded processing for demo
+            result = process_embedded_sync(content, "demo_278.edi", validate_only, 
+                                         enable_ai_analysis, output_format)
+            if result:
+                display_processing_results(result, "demo_278.edi")
+        else:
+            st.info("Demo processing requires embedded mode")
+    except Exception as e:
+        st.error(f"Demo processing failed: {str(e)}")
+
+
+async def process_with_embedded_service(content, filename, validate_only, enable_ai_analysis, output_format, options):
+    """Process using embedded service."""
+    if not HAS_LOCAL_PROCESSING:
+        st.error("Embedded processing not available")
+        return None
+    
+    try:
+        from app.core.models import EDIFileUpload
+        
+        # Create upload request
+        upload_request = EDIFileUpload(
+            filename=filename,
+            content_type="text/plain",
+            validate_only=validate_only,
+            enable_ai_analysis=enable_ai_analysis,
+            output_format=output_format
+        )
+        
+        # Process content
+        job = await processing_service.process_content(content, upload_request)
+        
+        # Convert job to API-compatible format
+        result = {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "message": "Processing completed" if job.status.value == "completed" else "Processing failed"
+        }
+        
+        # Store job in session state for later retrieval
+        if 'jobs' not in st.session_state:
+            st.session_state['jobs'] = {}
+        st.session_state['jobs'][job.job_id] = job
+        
+        return result
+        
+    except Exception as e:
+        st.error(f"Embedded processing failed: {str(e)}")
+        return None
+
+
+def process_embedded_sync(content, filename, validate_only, enable_ai_analysis, output_format):
+    """Synchronous embedded processing for demo."""
+    try:
+        from app.core.edi_parser import EDI278Parser, EDI278Validator
+        from app.core.fhir_mapper import X12To278FHIRMapper
+        from app.ai.analyzer import EDIAIAnalyzer
+        from app.core.models import EDIFileUpload, ProcessingJob, ProcessingStatus
+        import uuid
+        
+        # Create parser and validator
+        parser = EDI278Parser()
+        validator = EDI278Validator()
+        fhir_mapper = X12To278FHIRMapper()
+        ai_analyzer = EDIAIAnalyzer()
+        
+        # Parse content
+        parsed_edi = parser.parse_content(content, filename)
+        
+        # Validate
+        validation_result = validator.validate(parsed_edi)
+        
+        # FHIR mapping (if not validation only)
+        fhir_mapping = None
+        if not validate_only:
+            try:
+                fhir_result = fhir_mapper.map_to_fhir(parsed_edi)
+                fhir_mapping = fhir_result
+            except Exception as e:
+                st.warning(f"FHIR mapping failed: {str(e)}")
+        
+        # AI analysis (if enabled)
+        ai_analysis = None
+        if enable_ai_analysis:
+            try:
+                ai_analysis = asyncio.run(ai_analyzer.analyze_edi(parsed_edi, validation_result))
+            except Exception as e:
+                st.warning(f"AI analysis failed: {str(e)}")
+        
+        # Create job result
+        job_id = str(uuid.uuid4())
+        job = {
+            'job_id': job_id,
+            'status': 'completed',
+            'parsed_edi': parsed_edi,
+            'validation_result': validation_result,
+            'fhir_mapping': fhir_mapping,
+            'ai_analysis': ai_analysis,
+            'filename': filename,
+            'processing_time': 1.0  # Placeholder
+        }
+        
+        # Store in session state
+        if 'jobs' not in st.session_state:
+            st.session_state['jobs'] = {}
+        st.session_state['jobs'][job_id] = job
+        
+        return {
+            'job_id': job_id,
+            'status': 'completed',
+            'message': 'Processing completed successfully'
+        }
+        
+    except Exception as e:
+        st.error(f"Sync processing failed: {str(e)}")
+        return None
+
+
+async def process_with_api(content, filename, validate_only, enable_ai_analysis, output_format):
+    """Process using API."""
+    try:
+        # Prepare API request
+        data = {
+            "content": content,
+            "filename": filename,
+            "validate_only": validate_only,
+            "enable_ai_analysis": enable_ai_analysis,
+            "output_format": output_format
+        }
+        
+        # Call API
+        response = requests.post(f"{API_BASE_URL}/process", json=data)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"API processing failed: {response.text}")
+            return None
+            
+    except Exception as e:
+        st.error(f"API call failed: {str(e)}")
+        return None
+
+
+def display_processing_results(result, filename):
+    """Display comprehensive processing results with all advanced features."""
+    
+    # Get job details
+    job_id = result.get("job_id")
+    status = result.get("status", "unknown")
+    
+    # Status display
+    if status == "completed":
+        st.success(f"✅ Successfully processed {filename}")
+    elif status == "failed":
+        st.error(f"❌ Processing failed for {filename}")
+    else:
+        st.info(f"📋 Processing {status} for {filename}")
+    
+    # Get detailed job information
+    job_details = None
+    if job_id:
+        if IS_STREAMLIT_CLOUD and job_id in st.session_state.get('jobs', {}):
+            # Get from session state (embedded mode)
+            job_details = st.session_state['jobs'][job_id]
+        else:
+            # Get from API
+            try:
+                job_response = requests.get(f"{API_BASE_URL}/jobs/{job_id}")
+                if job_response.status_code == 200:
+                    job_details = job_response.json()
+            except Exception as e:
+                st.warning(f"Could not fetch job details: {e}")
+    
+    if not job_details:
+        st.warning("No detailed results available")
+        return
+    
+    # Validation Results Section
+    validation_result = job_details.get("validation_result")
+    if validation_result:
+        display_validation_section(validation_result, job_id)
+    
+    # AI Analysis Section
+    ai_analysis = job_details.get("ai_analysis")
+    if ai_analysis:
+        display_ai_analysis_section(ai_analysis)
+    
+    # FHIR Mapping Section
+    fhir_mapping = job_details.get("fhir_mapping")
+    if fhir_mapping and status == "completed":
+        display_fhir_section(fhir_mapping)
+    
+    # Download Section
+    if status == "completed":
+        display_download_section(job_id, filename, job_details)
+
+
+def display_validation_section(validation_result, job_id):
+    """Display comprehensive validation results."""
+    st.subheader("📋 Validation Results")
+    
+    # Extract validation data with error handling
+    if hasattr(validation_result, 'dict'):
+        val_data = validation_result.dict()
+    elif isinstance(validation_result, dict):
+        val_data = validation_result
+    else:
+        val_data = {
+            'is_valid': getattr(validation_result, 'is_valid', False),
+            'tr3_compliance': getattr(validation_result, 'tr3_compliance', False),
+            'segments_validated': getattr(validation_result, 'segments_validated', 0),
+            'validation_time': getattr(validation_result, 'validation_time', 0),
+            'issues': getattr(validation_result, 'issues', [])
+        }
+    
+    # Metrics row
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        is_valid = val_data.get("is_valid", False)
+        st.metric("✅ Valid", "YES" if is_valid else "NO")
+    
+    with col2:
+        tr3_compliance = val_data.get("tr3_compliance", False)
+        st.metric("📜 TR3 Compliant", "YES" if tr3_compliance else "NO")
+    
+    with col3:
+        segments_validated = val_data.get("segments_validated", 0)
+        st.metric("📊 Segments", segments_validated)
+    
+    with col4:
+        validation_time = val_data.get("validation_time", 0)
+        st.metric("⏱️ Time", f"{validation_time:.3f}s")
+    
+    # Issues table
+    issues = val_data.get("issues", [])
+    if issues:
+        st.subheader(f"🔍 Validation Issues ({len(issues)} found)")
+        
+        # Convert issues to DataFrame
+        if hasattr(issues[0], 'dict'):
+            issues_data = [issue.dict() for issue in issues]
+        else:
+            issues_data = issues
+        
+        issues_df = pd.DataFrame(issues_data)
+        
+        # Ensure required columns exist
+        required_columns = ['level', 'code', 'message', 'segment', 'line_number', 'suggested_fix']
+        for col in required_columns:
+            if col not in issues_df.columns:
+                issues_df[col] = 'N/A'
+        
+        # Filter controls
+        col_filter1, col_filter2 = st.columns(2)
+        
+        with col_filter1:
+            level_options = issues_df['level'].unique()
+            level_filter = st.multiselect(
+                "Filter by Severity",
+                options=level_options,
+                default=level_options,
+                key=f"level_filter_{job_id}"
+            )
+        
+        with col_filter2:
+            segment_options = issues_df['segment'].unique()
+            segment_filter = st.multiselect(
+                "Filter by Segment",
+                options=segment_options,
+                default=segment_options,
+                key=f"segment_filter_{job_id}"
+            )
+        
+        # Apply filters
+        filtered_df = issues_df[
+            (issues_df['level'].isin(level_filter)) &
+            (issues_df['segment'].isin(segment_filter))
+        ]
+        
+        if not filtered_df.empty:
+            # Display formatted table
+            display_df = filtered_df[required_columns].copy()
+            display_df.columns = ['Severity', 'Code', 'Message', 'Segment', 'Line #', 'Suggested Fix']
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Severity": st.column_config.TextColumn(width="small"),
+                    "Code": st.column_config.TextColumn(width="small"),
+                    "Message": st.column_config.TextColumn(width="large"),
+                    "Segment": st.column_config.TextColumn(width="small"),
+                    "Line #": st.column_config.TextColumn(width="small"),
+                    "Suggested Fix": st.column_config.TextColumn(width="large")
+                }
+            )
+            
+            # Issue summary chart
+            if len(filtered_df) > 0:
+                level_counts = filtered_df['level'].value_counts()
+                
+                fig = px.bar(
+                    x=level_counts.index,
+                    y=level_counts.values,
+                    title="Issues by Severity Level",
+                    color=level_counts.index,
+                    color_discrete_map={
+                        'critical': '#ff4444',
+                        'error': '#ff8800',
+                        'warning': '#ffcc00', 
+                        'info': '#4488ff'
+                    }
+                )
+                fig.update_layout(showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No issues match the selected filters.")
+    else:
+        st.success("🎉 No validation issues found! Document is fully compliant.")
+
+
+def display_ai_analysis_section(ai_analysis):
+    """Display AI analysis results."""
+    st.subheader("🤖 AI Analysis & Insights")
+    
+    # Extract AI data
+    if hasattr(ai_analysis, 'dict'):
+        ai_data = ai_analysis.dict()
+    elif isinstance(ai_analysis, dict):
+        ai_data = ai_analysis
+    else:
+        ai_data = {
+            'confidence_score': getattr(ai_analysis, 'confidence_score', 0),
+            'risk_assessment': getattr(ai_analysis, 'risk_assessment', 'unknown'),
+            'anomalies_detected': getattr(ai_analysis, 'anomalies_detected', []),
+            'suggested_fixes': getattr(ai_analysis, 'suggested_fixes', [])
+        }
+    
+    # AI metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        confidence_score = ai_data.get('confidence_score', 0)
+        confidence_color = "green" if confidence_score >= 0.8 else "orange" if confidence_score >= 0.6 else "red"
+        st.metric("🎯 Confidence Score", f"{confidence_score:.2f}", delta=None)
+    
+    with col2:
+        risk_level = ai_data.get('risk_assessment', 'unknown').upper()
+        risk_color = "green" if risk_level == "LOW" else "orange" if risk_level == "MEDIUM" else "red"
+        st.metric("⚠️ Risk Level", risk_level)
+    
+    with col3:
+        anomalies = ai_data.get("anomalies_detected", [])
+        st.metric("🔍 Anomalies", len(anomalies))
+    
+    # Anomalies display
+    if anomalies:
+        st.write("**🚨 Detected Anomalies:**")
+        for i, anomaly in enumerate(anomalies, 1):
+            st.warning(f"{i}. {anomaly}")
+    
+    # AI suggestions
+    suggestions = ai_data.get("suggested_fixes", [])
+    if suggestions:
+        st.write("**💡 AI Recommendations:**")
+        for i, suggestion in enumerate(suggestions, 1):
+            st.info(f"{i}. {suggestion}")
+
+
+def display_fhir_section(fhir_mapping):
+    """Display FHIR mapping results."""
+    st.subheader("🔄 FHIR Mapping Results")
+    
+    # Extract FHIR data
+    if hasattr(fhir_mapping, 'dict'):
+        fhir_data = fhir_mapping.dict()
+    elif isinstance(fhir_mapping, dict):
+        fhir_data = fhir_mapping
+    else:
+        fhir_data = {
+            'resources': getattr(fhir_mapping, 'resources', []),
+            'resource_count': getattr(fhir_mapping, 'resource_count', 0)
+        }
+    
+    resources = fhir_data.get('resources', [])
+    
+    if resources:
+        st.success(f"✅ Successfully mapped to {len(resources)} FHIR resources")
+        
+        # Resource summary
+        resource_types = {}
+        for resource in resources:
+            if hasattr(resource, 'dict'):
+                res_data = resource.dict()
+            else:
+                res_data = resource
+            
+            res_type = res_data.get('resource_type', 'Unknown')
+            resource_types[res_type] = resource_types.get(res_type, 0) + 1
+        
+        # Display resource counts
+        cols = st.columns(len(resource_types))
+        for i, (res_type, count) in enumerate(resource_types.items()):
+            with cols[i]:
+                st.metric(f"📋 {res_type}", count)
+        
+        # Detailed resource view
+        with st.expander("🔍 View FHIR Resources"):
+            for i, resource in enumerate(resources):
+                if hasattr(resource, 'dict'):
+                    res_data = resource.dict()
+                else:
+                    res_data = resource
+                
+                st.subheader(f"{res_data.get('resource_type', 'Unknown')} Resource")
+                st.json(res_data.get('data', {}))
+    else:
+        st.warning("⚠️ No FHIR resources were generated")
+
+
+def display_download_section(job_id, filename, job_details):
+    """Display download options for all formats."""
+    st.subheader("💾 Download Results")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # JSON Download
+    with col1:
+        try:
+            if IS_STREAMLIT_CLOUD:
+                # Generate JSON from job details
+                json_content = json.dumps(job_details, indent=2, default=str)
+                st.download_button(
+                    "📄 JSON",
+                    json_content,
+                    f"result_{filename}.json",
+                    "application/json",
+                    key=f"json_{job_id}"
+                )
+            else:
+                response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/json")
+                if response.status_code == 200:
+                    st.download_button(
+                        "📄 JSON",
+                        response.text,
+                        f"result_{filename}.json",
+                        "application/json",
+                        key=f"json_{job_id}"
+                    )
+                else:
+                    st.text("JSON not available")
+        except Exception:
+            st.text("JSON not available")
+    
+    # XML Download
+    with col2:
+        try:
+            if IS_STREAMLIT_CLOUD:
+                # Generate XML from FHIR data
+                fhir_mapping = job_details.get('fhir_mapping')
+                if fhir_mapping:
+                    # Simple XML generation
+                    xml_content = "<fhir_bundle>\n"
+                    xml_content += json.dumps(fhir_mapping, indent=2, default=str)
+                    xml_content += "\n</fhir_bundle>"
+                    st.download_button(
+                        "📄 XML",
+                        xml_content,
+                        f"result_{filename}.xml",
+                        "application/xml",
+                        key=f"xml_{job_id}"
+                    )
+                else:
+                    st.text("XML not available")
+            else:
+                response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/xml")
+                if response.status_code == 200:
+                    st.download_button(
+                        "📄 XML",
+                        response.text,
+                        f"result_{filename}.xml",
+                        "application/xml",
+                        key=f"xml_{job_id}"
+                    )
+                else:
+                    st.text("XML not available")
+        except Exception:
+            st.text("XML not available")
+    
+    # EDI Download
+    with col3:
+        try:
+            if IS_STREAMLIT_CLOUD:
+                # Use original content if available
+                parsed_edi = job_details.get('parsed_edi')
+                if parsed_edi:
+                    edi_content = getattr(parsed_edi, 'raw_content', str(parsed_edi))
+                    st.download_button(
+                        "📄 EDI",
+                        edi_content,
+                        f"result_{filename}.edi",
+                        "text/plain",
+                        key=f"edi_{job_id}"
+                    )
+                else:
+                    st.text("EDI not available")
+            else:
+                response = requests.get(f"{API_BASE_URL}/jobs/{job_id}/export/edi")
+                if response.status_code == 200:
+                    st.download_button(
+                        "📄 EDI",
+                        response.text,
+                        f"result_{filename}.edi",
+                        "text/plain",
+                        key=f"edi_{job_id}"
+                    )
+                else:
+                    st.text("EDI not available")
+        except Exception:
+            st.text("EDI not available")
+    
+    # Validation Report
+    with col4:
+        try:
+            validation_result = job_details.get('validation_result')
+            if validation_result:
+                # Generate validation report
+                report_content = generate_validation_report(validation_result, filename)
+                st.download_button(
+                    "📋 Report",
+                    report_content,
+                    f"validation_{filename}.json",
+                    "application/json",
+                    key=f"report_{job_id}"
+                )
+            else:
+                st.text("Report not available")
+        except Exception:
+            st.text("Report not available")
+
+
+def generate_validation_report(validation_result, filename):
+    """Generate a comprehensive validation report."""
+    if hasattr(validation_result, 'dict'):
+        val_data = validation_result.dict()
+    else:
+        val_data = validation_result
+    
+    report = {
+        "filename": filename,
+        "validation_timestamp": datetime.now().isoformat(),
+        "summary": {
+            "is_valid": val_data.get("is_valid", False),
+            "tr3_compliance": val_data.get("tr3_compliance", False),
+            "segments_validated": val_data.get("segments_validated", 0),
+            "validation_time": val_data.get("validation_time", 0),
+            "total_issues": len(val_data.get("issues", []))
+        },
+        "issues": val_data.get("issues", []),
+        "suggested_improvements": val_data.get("suggested_improvements", [])
+    }
+    
+    return json.dumps(report, indent=2, default=str)
+
+
+def show_validation_page():
+    """Show the enhanced validation page with all features."""
+    
+    st.header("🔍 EDI Validation & Analysis")
+    st.markdown("Comprehensive validation with TR3 compliance checking and AI insights")
+    
+    # Text area for direct input
+    st.subheader("📝 Paste EDI Content")
+    edi_content = st.text_area(
+        "EDI Content",
+        height=200,
+        placeholder="Paste your X12 278 EDI content here..."
+    )
+    
+    # File upload option
+    st.subheader("📤 Or Upload File")
+    uploaded_file = st.file_uploader(
+        "Choose an EDI file for validation",
+        type=["edi", "txt", "x12"]
+    )
+    
+    if uploaded_file:
+        edi_content = uploaded_file.read().decode('utf-8')
+        st.text_area("File Content Preview", edi_content[:1000] + "..." if len(edi_content) > 1000 else edi_content, height=150)
+    
+    # Validation options
+    col1, col2 = st.columns(2)
+    with col1:
+        enable_ai_analysis = st.checkbox("🤖 Enable AI Analysis", value=True)
+        strict_tr3 = st.checkbox("📜 Strict TR3 Validation", value=False)
+    
+    with col2:
+        show_details = st.checkbox("📊 Show Detailed Metrics", value=True)
+        export_results = st.checkbox("💾 Enable Export Options", value=True)
+    
+    # Validate button - enable if there's content
+    if st.button("🔍 Validate & Analyze", type="primary", disabled=(not edi_content or not edi_content.strip())):
+        validate_edi_content(edi_content, {
+            'enable_ai_analysis': enable_ai_analysis,
+            'strict_tr3': strict_tr3,
+            'show_details': show_details,
+            'export_results': export_results
+        })
+
+
+def validate_edi_content(content, options):
+    """Enhanced EDI content validation with all features."""
+    
+    with st.spinner("🔄 Performing comprehensive validation..."):
+        try:
+            if IS_STREAMLIT_CLOUD and HAS_LOCAL_PROCESSING:
+                # Use embedded processing
+                result = validate_with_embedded_service(content, options)
+            else:
+                # Use API
+                data = {
+                    "content": content,
+                    "filename": "validation.edi",
+                    "enable_ai_analysis": options.get('enable_ai_analysis', True)
+                }
+                
+                response = requests.post(f"{API_BASE_URL}/validate", json=data)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                else:
+                    st.error(f"Validation failed: {response.text}")
+                    return
+            
+            if result:
+                display_enhanced_validation_results(result, options)
+                
+        except Exception as e:
+            st.error(f"Error during validation: {str(e)}")
+            st.exception(e)
+
+
+def validate_with_embedded_service(content, options):
+    """Validate using embedded service."""
+    try:
+        from app.core.edi_parser import EDI278Parser, EDI278Validator
+        from app.ai.analyzer import EDIAIAnalyzer
+        
+        # Create components
+        parser = EDI278Parser()
+        validator = EDI278Validator()
+        ai_analyzer = EDIAIAnalyzer()
+        
+        # Parse and validate
+        parsed_edi = parser.parse_content(content, "validation.edi")
+        validation_result = validator.validate(parsed_edi)
+        
+        # AI analysis if enabled
+        ai_analysis = None
+        if options.get('enable_ai_analysis', True):
+            try:
+                ai_analysis = asyncio.run(ai_analyzer.analyze_edi(parsed_edi, validation_result))
+            except Exception as e:
+                st.warning(f"AI analysis failed: {str(e)}")
+        
+        # Convert to API format
+        result = {
+            "is_valid": validation_result.is_valid,
+            "tr3_compliance": validation_result.tr3_compliance,
+            "segments_validated": validation_result.segments_validated,
+            "validation_time": validation_result.validation_time,
+            "issues": [issue.dict() if hasattr(issue, 'dict') else issue for issue in validation_result.issues],
+            "suggested_improvements": validation_result.suggested_improvements
+        }
+        
+        if ai_analysis:
+            result["ai_analysis"] = {
+                "confidence_score": ai_analysis.confidence_score,
+                "risk_assessment": ai_analysis.risk_assessment,
+                "anomalies_detected": ai_analysis.anomalies_detected,
+                "suggested_fixes": ai_analysis.suggested_fixes,
+                "pattern_analysis": ai_analysis.pattern_analysis
+            }
+        
+        return result
+        
+    except Exception as e:
+        st.error(f"Embedded validation failed: {str(e)}")
+        return None
+
+
+def display_enhanced_validation_results(result, options):
+    """Display enhanced validation results with all features."""
+    
+    is_valid = result.get("is_valid", False)
+    tr3_compliance = result.get("tr3_compliance", False)
+    
+    # Overall status with enhanced styling
+    if is_valid and tr3_compliance:
+        st.success("🎉 **VALIDATION PASSED!** File is valid and TR3 compliant.")
+    elif is_valid:
+        st.warning("⚠️ **PARTIAL SUCCESS** - File is structurally valid but has TR3 compliance issues.")
+    else:
+        st.error("❌ **VALIDATION FAILED** - File has structural issues that must be addressed.")
+    
+    # Enhanced metrics display
+    if options.get('show_details', True):
+        st.subheader("📊 Validation Metrics")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("✅ Structural Validity", "PASS" if is_valid else "FAIL")
+        with col2:
+            st.metric("📜 TR3 Compliance", "PASS" if tr3_compliance else "FAIL")
+        with col3:
+            segments_validated = result.get("segments_validated", 0)
+            st.metric("📊 Segments", segments_validated)
+        with col4:
+            validation_time = result.get("validation_time", 0)
+            st.metric("⏱️ Processing Time", f"{validation_time:.3f}s")
+        with col5:
+            issues_count = len(result.get("issues", []))
+            st.metric("🚨 Issues Found", issues_count)
+    
+    # Display validation results using the same logic as processing results
+    display_validation_section(result, "validation")
+    
+    # AI Analysis
+    ai_analysis = result.get("ai_analysis")
+    if ai_analysis:
+        display_ai_analysis_section(ai_analysis)
+    
+    # Export options
+    if options.get('export_results', True):
+        st.subheader("💾 Export Validation Results")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # JSON export
+            json_content = json.dumps(result, indent=2, default=str)
+            st.download_button(
+                "📄 Download JSON Report",
+                json_content,
+                "validation_report.json",
+                "application/json"
+            )
+        
+        with col2:
+            # CSV export for issues
+            issues = result.get("issues", [])
+            if issues:
+                issues_df = pd.DataFrame(issues)
+                csv_content = issues_df.to_csv(index=False)
+                st.download_button(
+                    "📊 Download Issues CSV",
+                    csv_content,
+                    "validation_issues.csv",
+                    "text/csv"
+                )
+            else:
+                st.info("No issues to export")
+
+
+def display_validation_results(result):
+    """Display validation results with improved formatting."""
+    
+    is_valid = result.get("is_valid", False)
+    tr3_compliance = result.get("tr3_compliance", False)
+    
+    # Overall status
+    if is_valid and tr3_compliance:
+        st.success("✅ Validation passed! File is valid and TR3 compliant.")
+    elif is_valid:
+        st.warning("⚠️ File is structurally valid but may have TR3 compliance issues.")
+    else:
+        st.error("❌ Validation failed! File has structural issues.")
+    
+    # Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Valid", "✅" if is_valid else "❌")
+    with col2:
+        st.metric("TR3 Compliant", "✅" if tr3_compliance else "❌")
+    with col3:
+        segments_validated = result.get("segments_validated", 0)
+        st.metric("Segments Validated", segments_validated)
+    with col4:
+        validation_time = result.get("validation_time", 0)
+        st.metric("Validation Time", f"{validation_time:.3f}s")
+    
+    # Issues
+    issues = result.get("issues", [])
+    if issues:
+        st.subheader(f"Validation Issues ({len(issues)} total)")
+        
+        # Create DataFrame with proper error handling
+        issues_df = pd.DataFrame(issues)
+        
+        # Ensure all required columns exist
+        required_columns = ['level', 'code', 'message', 'segment', 'line_number', 'suggested_fix']
+        for col in required_columns:
+            if col not in issues_df.columns:
+                issues_df[col] = None
+        
+        # Replace None values with appropriate defaults
+        issues_df['line_number'] = issues_df['line_number'].fillna('N/A')
+        issues_df['segment'] = issues_df['segment'].fillna('N/A')
+        issues_df['suggested_fix'] = issues_df['suggested_fix'].fillna('No suggestion available')
+        
+        # Filter options
+        level_options = issues_df['level'].unique() if 'level' in issues_df.columns else []
+        level_filter = st.multiselect(
+            "Filter by Level",
+            options=level_options,
+            default=level_options
+        )
+        
+        if level_filter:
+            filtered_issues = issues_df[issues_df['level'].isin(level_filter)]
+        else:
+            filtered_issues = issues_df
+        
+        # Display table with improved formatting
+        if not filtered_issues.empty:
+            # Create a display version with better formatting
+            display_df = filtered_issues[required_columns].copy()
+            display_df.columns = ['Level', 'Code', 'Message', 'Segment', 'Line #', 'Suggested Fix']
+            
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Issue level counts with proper chart
+            if len(issues_df) > 0:
+                level_counts = issues_df['level'].value_counts()
+                
+                # Create chart data
+                chart_data = pd.DataFrame({
+                    'Level': level_counts.index,
+                    'Count': level_counts.values
+                })
+                
+                # Fixed plotly chart
+                fig = px.bar(
+                    chart_data,
+                    x='Level',
+                    y='Count',
+                    title="Issues by Severity Level",
+                    color='Level',
+                    color_discrete_map={
+                        'critical': '#ff4444',
+                        'error': '#ff8800', 
+                        'warning': '#ffcc00',
+                        'info': '#4488ff'
+                    }
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No issues match the selected filter criteria.")
+    else:
+        st.success("🎉 No validation issues found!")
+    
+    # AI Analysis
+    ai_analysis = result.get("ai_analysis")
+    if ai_analysis:
+        st.subheader("🤖 AI Analysis")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            confidence_score = ai_analysis.get('confidence_score', 0)
+            st.metric("Confidence Score", f"{confidence_score:.2f}")
+            st.metric("Risk Assessment", ai_analysis.get('risk_assessment', 'unknown').upper())
+        
+        with col2:
+            anomalies = ai_analysis.get("anomalies_detected", [])
+            st.metric("Anomalies Found", len(anomalies))
+        
+        if anomalies:
+            st.write("**Detected Anomalies:**")
+            for i, anomaly in enumerate(anomalies, 1):
+                st.write(f"{i}. ⚠️ {anomaly}")
+        
+        suggestions = ai_analysis.get("suggested_fixes", [])
+        if suggestions:
+            st.write("**AI Suggestions:**")
+            for i, suggestion in enumerate(suggestions, 1):
+                st.write(f"{i}. 💡 {suggestion}")
+
+
+def show_dashboard_page():
+    """Show the dashboard with analytics and monitoring."""
+    
+    st.header("📊 Dashboard")
+    
+    # Add refresh button and auto-refresh
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("Real-time analytics and monitoring")
+    with col2:
+        if st.button("🔄 Refresh", help="Clear cache and refresh data"):
+            st.cache_data.clear()
+            st.rerun()
+    
+    # Get statistics
+    stats = get_statistics()
+    
+    if stats:
+        # Key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            total_files = stats.get("total_files_processed", 0)
+            st.metric(
+                "Total Files",
+                total_files,
+                delta=None
+            )
+        
+        with col2:
+            success_rate = stats.get("success_rate", 0)
+            # Show success rate with better formatting
+            if success_rate > 0:
+                st.metric(
+                    "Success Rate",
+                    f"{success_rate:.1f}%",
+                    delta=f"+{success_rate:.1f}%" if success_rate > 85 else None,
+                    delta_color="normal"
+                )
+            else:
+                st.metric(
+                    "Success Rate", 
+                    "0.0%",
+                    help="Process some files to see success rate"
+                )
+        
+        with col3:
+            successful = stats.get("successful_conversions", 0)
+            st.metric(
+                "Successful",
+                successful,
+                delta=f"+{successful}" if successful > 0 else None
+            )
+        
+        with col4:
+            failed = stats.get("failed_conversions", 0)
+            st.metric(
+                "Failed",
+                failed,
+                delta=f"+{failed}" if failed > 0 else None,
+                delta_color="inverse"
+            )
+        
+        # Additional metrics
+        if total_files > 0:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                avg_time = stats.get("average_processing_time", 0)
+                st.metric("Avg Processing Time", f"{avg_time:.2f}s")
+            
+            with col2:
+                # Calculate completion rate
+                completion_rate = ((successful + failed) / total_files * 100) if total_files > 0 else 0
+                st.metric("Completion Rate", f"{completion_rate:.1f}%")
+            
+            with col3:
+                last_updated = stats.get("last_updated", "Unknown")
+                if last_updated != "Unknown":
+                    try:
+                        from datetime import datetime
+                        updated_time = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                        st.metric("Last Updated", updated_time.strftime("%H:%M:%S"))
+                    except:
+                        st.metric("Last Updated", "Just now")
+                else:
+                    st.metric("Last Updated", "Unknown")
+        
+        # Charts
+        st.subheader("Processing Analytics")
+        
+        # Get recent jobs for charts
+        jobs = get_recent_jobs(50)
+        
+        if jobs:
+            # Status distribution
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                status_counts = pd.Series([job["status"] for job in jobs]).value_counts()
+                fig = px.pie(
+                    values=status_counts.values,
+                    names=status_counts.index,
+                    title="Job Status Distribution",
+                    color_discrete_map={
+                        'completed': '#28a745',
+                        'failed': '#dc3545', 
+                        'processing': '#ffc107',
+                        'pending': '#6c757d'
+                    }
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with col2:
+                # Processing time over time (if available)
+                jobs_df = pd.DataFrame(jobs)
+                if 'processing_time' in jobs_df.columns and not jobs_df['processing_time'].isna().all():
+                    # Filter out None values
+                    valid_times = jobs_df[jobs_df['processing_time'].notna()].copy()
+                    if not valid_times.empty:
+                        valid_times['created_at'] = pd.to_datetime(valid_times['created_at'])
+                        fig = px.line(
+                            valid_times.sort_values('created_at'),
+                            x='created_at',
+                            y='processing_time',
+                            title="Processing Time Trend",
+                            labels={'processing_time': 'Time (seconds)', 'created_at': 'Time'}
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No processing time data available yet")
+                else:
+                    st.info("No processing time data available yet")
+        
+        # Common errors
+        common_errors = stats.get("most_common_errors", [])
+        if common_errors:
+            st.subheader("Most Common Errors")
+            for i, error in enumerate(common_errors[:5]):
+                st.write(f"{i+1}. {error}")
+        else:
+            st.success("🎉 No common errors found!")
+    
+    else:
+        st.info("No statistics available yet. Process some files to see analytics.")
+        st.markdown("""
+        **To get started:**
+        1. Go to the Upload & Process page
+        2. Upload an EDI file or use the sample generator
+        3. Process the file
+        4. Return here to see analytics
+        """)
+        
+        # Add a test button for debugging
+        if st.button("🔍 Test API Connection"):
+            try:
+                response = requests.get(f"{API_BASE_URL}/health")
+                if response.status_code == 200:
+                    st.success("✅ API is running correctly")
+                    # Also test stats endpoint
+                    stats_response = requests.get(f"{API_BASE_URL}/stats")
+                    if stats_response.status_code == 200:
+                        st.info(f"📊 Stats endpoint working: {stats_response.json()}")
+                    else:
+                        st.warning(f"⚠️ Stats endpoint issue: {stats_response.status_code}")
+                else:
+                    st.error(f"❌ API health check failed: {response.status_code}")
+            except Exception as e:
+                st.error(f"❌ Cannot connect to API: {str(e)}")
+
+
+def show_job_history_page():
+    """Show job history and management."""
+    
+    st.header("📋 Job History")
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        status_filter = st.selectbox(
+            "Filter by Status",
+            ["All", "completed", "failed", "processing", "pending"]
+        )
+    
+    with col2:
+        limit = st.number_input("Number of Jobs", min_value=10, max_value=100, value=20)
+    
+    with col3:
+        if st.button("Refresh"):
+            st.experimental_rerun()
+    
+    # Get jobs
+    jobs = get_recent_jobs(limit, status_filter if status_filter != "All" else None)
+    
+    if jobs:
+        # Jobs table
+        jobs_df = pd.DataFrame(jobs)
+        
+        # Select columns to display
+        display_columns = ['filename', 'status', 'created_at', 'processing_time', 'file_size']
+        available_columns = [col for col in display_columns if col in jobs_df.columns]
+        
+        # Format the data
+        if 'created_at' in jobs_df.columns:
+            jobs_df['created_at'] = pd.to_datetime(jobs_df['created_at']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        if 'processing_time' in jobs_df.columns:
+            jobs_df['processing_time'] = jobs_df['processing_time'].apply(
+                lambda x: f"{x:.2f}s" if pd.notna(x) else "N/A"
+            )
+        
+        if 'file_size' in jobs_df.columns:
+            jobs_df['file_size'] = jobs_df['file_size'].apply(
+                lambda x: f"{x:,} bytes" if pd.notna(x) else "N/A"
+            )
+        
+        # Display table
+        st.dataframe(
+            jobs_df[available_columns],
+            use_container_width=True
+        )
+        
+        # Job details
+        if jobs:
+            st.subheader("Job Details")
+            selected_job_id = st.selectbox(
+                "Select Job to View Details",
+                options=[job["job_id"] for job in jobs],
+                format_func=lambda x: f"{x[:8]}... - {next(job['filename'] for job in jobs if job['job_id'] == x)}"
+            )
+            
+            if selected_job_id:
+                job_details = get_job_details(selected_job_id)
+                if job_details:
+                    st.json(job_details)
+                    
+                    # Download options
+                    st.subheader("Download Results")
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        try:
+                            response = requests.get(f"{API_BASE_URL}/jobs/{selected_job_id}/export/json")
+                            if response.status_code == 200:
+                                st.download_button(
+                                    "JSON",
+                                    response.text,
+                                    f"result_{selected_job_id}.json",
+                                    "application/json",
+                                    key=f"history_json_{selected_job_id}"
+                                )
+                        except Exception as e:
+                            st.text("JSON not available")
+                    
+                    with col2:
+                        try:
+                            response = requests.get(f"{API_BASE_URL}/jobs/{selected_job_id}/export/xml")
+                            if response.status_code == 200:
+                                st.download_button(
+                                    "XML",
+                                    response.text,
+                                    f"result_{selected_job_id}.xml",
+                                    "application/xml",
+                                    key=f"history_xml_{selected_job_id}"
+                                )
+                        except Exception as e:
+                            st.text("XML not available")
+                    
+                    with col3:
+                        try:
+                            response = requests.get(f"{API_BASE_URL}/jobs/{selected_job_id}/export/edi")
+                            if response.status_code == 200:
+                                st.download_button(
+                                    "EDI",
+                                    response.text,
+                                    f"result_{selected_job_id}.edi",
+                                    "text/plain",
+                                    key=f"history_edi_{selected_job_id}"
+                                )
+                        except Exception as e:
+                            st.text("EDI not available")
+                    
+                    with col4:
+                        try:
+                            response = requests.get(f"{API_BASE_URL}/jobs/{selected_job_id}/export/validation")
+                            if response.status_code == 200:
+                                st.download_button(
+                                    "Report",
+                                    response.text,
+                                    f"validation_report_{selected_job_id}.json",
+                                    "application/json",
+                                    key=f"history_report_{selected_job_id}"
+                                )
+                        except Exception as e:
+                            st.text("Report not available")
+    else:
+        st.info("No jobs found. Upload some files to see job history.")
+
+
+def show_settings_page():
+    """Show settings and configuration."""
+    
+    st.header("⚙️ Settings")
+    
+    # API Configuration
+    st.subheader("API Configuration")
+    
+    current_url = st.text_input("API Base URL", value=API_BASE_URL)
+    
+    if st.button("Test Connection"):
+        test_api_connection(current_url)
+    
+    # Processing Settings
+    st.subheader("Processing Settings")
+    
+    # These would typically be saved to session state or config
+    default_ai_analysis = st.checkbox("Enable AI Analysis by Default", value=True)
+    default_output_format = st.selectbox("Default Output Format", ["fhir", "json", "xml"])
+    max_file_size = st.number_input("Max File Size (MB)", min_value=1, max_value=100, value=50)
+    
+    # System Information
+    st.subheader("System Information")
+    
+    health = check_api_health()
+    if health["healthy"]:
+        health_data = health["data"]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**API Status:** ✅ Healthy")
+            st.write(f"**Version:** {health_data.get('version', 'Unknown')}")
+            st.write(f"**Timestamp:** {health_data.get('timestamp', 'Unknown')}")
+        
+        with col2:
+            components = health_data.get("components", {})
+            st.write("**Components:**")
+            for component, status in components.items():
+                icon = "✅" if status == "healthy" else "❌" if status == "unhealthy" else "⚠️"
+                st.write(f"{icon} {component.title()}: {status}")
+    
+    # Cache Management
+    st.subheader("Cache Management")
+    
+    if st.button("Clear Cache"):
+        st.cache_data.clear()
+        st.success("Cache cleared!")
+    
+    # Cleanup
+    if st.button("Cleanup Old Jobs"):
+        cleanup_old_jobs()
+
+
+def test_api_connection(url):
+    """Test API connection."""
+    try:
+        response = requests.get(f"{url}/health", timeout=5)
+        if response.status_code == 200:
+            st.success("✅ Connection successful!")
+        else:
+            st.error(f"❌ Connection failed: HTTP {response.status_code}")
+    except Exception as e:
+        st.error(f"❌ Connection failed: {str(e)}")
+
+
+@st.cache_data(ttl=30)  # Reduced TTL from 60 to 30 seconds for faster updates
+def get_statistics():
+    """Get statistics from API (cached)."""
+    try:
+        response = requests.get(f"{API_BASE_URL}/stats")
+        if response.status_code == 200:
+            stats = response.json()
+            # Debug: ensure success rate is calculated correctly
+            total = stats.get("total_files_processed", 0)
+            successful = stats.get("successful_conversions", 0)
+            if total > 0 and successful > 0:
+                # Recalculate success rate to ensure it's correct
+                calculated_rate = (successful / total) * 100
+                stats["success_rate"] = calculated_rate
+            return stats
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=30)
+def get_recent_jobs(limit=20, status=None):
+    """Get recent jobs from API (cached)."""
+    try:
+        params = {"limit": limit}
+        if status:
+            params["status"] = status
+        
+        response = requests.get(f"{API_BASE_URL}/jobs", params=params)
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return []
+
+
+def get_job_details(job_id):
+    """Get job details from API."""
+    try:
+        response = requests.get(f"{API_BASE_URL}/jobs/{job_id}")
+        if response.status_code == 200:
+            return response.json()
+    except Exception:
+        pass
+    return None
+
+
+# download_result function removed - downloads now handled directly with st.download_button
+
+
+def cleanup_old_jobs():
+    """Cleanup old jobs."""
+    try:
+        response = requests.post(f"{API_BASE_URL}/admin/cleanup")
+        if response.status_code == 200:
+            st.success("✅ Cleanup completed!")
+        else:
+            st.error(f"Cleanup failed: {response.text}")
+    except Exception as e:
+        st.error(f"Cleanup error: {str(e)}")
+
+
+def generate_sample_edi():
+    """Generate a sample EDI file."""
+    return """ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *230815*1430*U*00501*000000001*0*P*>~
+GS*HS*SENDER*RECEIVER*20230815*1430*000000001*X*005010X217~
+ST*278*000000001~
+BHT*0078*01*SAMPLE123*20230815*1430~
+HL*1**20*1~
+NM1*41*2*SAMPLE HEALTHCARE*****46*123456789~
+HL*2*1*21*1~
+NM1*PR*2*SAMPLE INSURANCE*****46*987654321~
+HL*3*2*22*0~
+NM1*IL*1*DOE*JOHN*****MI*123456789~
+DMG*D8*19850301*M~
+UM*HS*99213*OFFICE VISIT~
+SE*11*000000001~
+GE*1*000000001~
+IEA*1*000000001~"""
+
 
 if __name__ == "__main__":
-    main() 
+    main()

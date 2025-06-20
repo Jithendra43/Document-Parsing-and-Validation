@@ -1,0 +1,50 @@
+# EDI X12 278 Processing Microservice Configuration
+
+# Application Settings
+DEBUG=false
+APP_NAME="EDI X12 278 Processor"
+APP_VERSION="0.1.0"
+
+# API Configuration
+API_HOST=0.0.0.0
+API_PORT=8000
+API_PREFIX="/api/v1"
+
+# Streamlit Configuration
+STREAMLIT_HOST=0.0.0.0
+STREAMLIT_PORT=8501
+
+# File Processing
+MAX_FILE_SIZE=52428800  # 50MB
+UPLOAD_DIR=./uploads
+OUTPUT_DIR=./outputs
+TEMP_DIR=./temp
+
+# Database
+DATABASE_URL=sqlite:///./edi_processor.db
+
+# Redis (optional)
+REDIS_URL=redis://localhost:6379/0
+
+# AI/ML Configuration (Groq API)
+GROQ_API_KEY=your_groq_api_key_here
+AI_MODEL=llama3-70b-8192
+
+# Alternative AI Configuration (OpenAI)
+# OPENAI_API_KEY=your_openai_api_key_here
+
+# FHIR Configuration
+FHIR_BASE_URL=http://localhost:8080/fhir
+FHIR_VERSION=R4
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+
+# Security
+SECRET_KEY=your-secret-key-change-in-production
+ALLOWED_ORIGINS=["*"]
+
+# EDI Processing
+VALIDATE_SEGMENTS=true
+STRICT_VALIDATION=false 

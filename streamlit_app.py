@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 import io
+import os
 
 # Page config
 st.set_page_config(
@@ -19,8 +20,11 @@ st.set_page_config(
 )
 
 # Configuration
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 SUPPORTED_FORMATS = [".edi", ".txt", ".x12"]
+
+# Check if we're running on Streamlit Cloud (API won't be available)
+IS_STREAMLIT_CLOUD = "streamlit.io" in os.getenv("STREAMLIT_SERVER_ADDRESS", "") or not os.getenv("API_BASE_URL")
 
 # Custom CSS
 st.markdown("""
