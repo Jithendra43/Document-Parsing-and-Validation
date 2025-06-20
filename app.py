@@ -116,11 +116,12 @@ def main():
     if IS_STREAMLIT_CLOUD:
         st.markdown('<div class="cloud-mode">☁️ <strong>Cloud Mode</strong> - Enhanced with embedded processing</div>', unsafe_allow_html=True)
     
-    # Sidebar navigation
-    st.sidebar.title("Navigation")
+    # Navigation
+    st.sidebar.title("EDI X12 278 Processor")
+    
     page = st.sidebar.selectbox(
-        "Choose a page",
-        ["🏠 Home", "📤 Upload & Process", "🔍 Validate Only", "📊 Dashboard", "📋 Job History", "⚙️ Settings"]
+        "Navigation",
+        ["Home", "Upload & Process", "Validate Only", "Dashboard", "Job History", "Settings"]
     )
     
     # Check system health
@@ -131,17 +132,17 @@ def main():
             st.session_state['force_embedded'] = True
     
     # Route to different pages
-    if page == "🏠 Home":
+    if page == "Home":
         show_home_page()
-    elif page == "📤 Upload & Process":
+    elif page == "Upload & Process":
         show_upload_page()
-    elif page == "🔍 Validate Only":
+    elif page == "Validate Only":
         show_validation_page()
-    elif page == "📊 Dashboard":
+    elif page == "Dashboard":
         show_dashboard_page()
-    elif page == "📋 Job History":
+    elif page == "Job History":
         show_job_history_page()
-    elif page == "⚙️ Settings":
+    elif page == "Settings":
         show_settings_page()
 
 
@@ -228,8 +229,6 @@ def show_home_page():
                 for component, status in components.items():
                     icon = "✅" if status == "healthy" else "⚠️"
                     st.write(f"{icon} {component.title()}: {status}")
-            else:
-                st.error(f"❌ System Unhealthy: {health['error']}")
         
         # Quick links
         st.subheader("Quick Actions")
@@ -242,90 +241,60 @@ def show_home_page():
 
 
 def show_upload_page():
-    """Show the file upload and processing page with enhanced features."""
+    """Show the upload and processing page with enhanced features."""
     
-    st.header("📤 Upload & Process EDI Files")
-    st.markdown("Upload X12 278 EDI files for comprehensive processing and validation")
+    st.header("Process EDI Files")
+    st.markdown("Upload your X12 278 EDI files for comprehensive processing and validation")
     
-    # File upload section
+    # File upload
     uploaded_file = st.file_uploader(
         "Choose an EDI file",
         type=["edi", "txt", "x12"],
-        help="Upload X12 278 EDI files for processing"
+        help="Upload X12 278 EDI files in .edi, .txt, or .x12 format"
     )
     
     # Processing options
-    st.subheader("⚙️ Processing Options")
+    st.subheader("Processing Options")
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("**Processing Mode**")
-        validate_only = st.checkbox("Validation Only", value=False, 
-                                  help="Only validate the file without conversion")
-        enable_ai_analysis = st.checkbox("Enable AI Analysis", value=True,
-                                       help="Use AI for anomaly detection and smart suggestions")
+        validate_only = st.checkbox("Validation Only", value=False, help="Only validate without conversion")
+        enable_ai_analysis = st.checkbox("Enable AI Analysis", value=True, help="Use AI for enhanced analysis")
     
     with col2:
-        st.markdown("**Output Format**")
         output_format = st.selectbox(
-            "Choose format",
+            "Output Format",
             ["fhir", "json", "xml"],
-            help="Choose the output format for conversion"
+            help="Choose the output format for processing results"
         )
-        
-        tr3_strict = st.checkbox("Strict TR3 Validation", value=False,
-                                help="Enable strict TR3 compliance checking")
     
     # Advanced options
-    with st.expander("🔧 Advanced Options"):
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            max_issues = st.slider("Max Issues to Show", 10, 100, 50,
-                                 help="Maximum number of validation issues to display")
-            
-        with col4:
-            confidence_threshold = st.slider("AI Confidence Threshold", 0.0, 1.0, 0.7, 0.1,
-                                           help="Minimum confidence score for AI suggestions")
+    with st.expander("Advanced Options"):
+        options = {
+            'show_details': st.checkbox("Show Detailed Results", value=True),
+            'export_results': st.checkbox("Enable Export Options", value=True),
+            'tr3_validation': st.checkbox("Strict TR3 Validation", value=True),
+            'include_warnings': st.checkbox("Include Warnings", value=True)
+        }
     
     # Process button
-    process_disabled = uploaded_file is None
-    button_text = "Process File" if not validate_only else "Validate File"
+    if uploaded_file is not None:
+        if st.button("Process File", type="primary"):
+            # Use synchronous processing to avoid async issues
+            process_uploaded_file_sync(uploaded_file, validate_only, enable_ai_analysis, output_format, options)
     
-    if st.button(button_text, type="primary", disabled=process_disabled):
-        if uploaded_file is not None:
-            process_uploaded_file(uploaded_file, validate_only, enable_ai_analysis, output_format, {
-                'tr3_strict': tr3_strict,
-                'max_issues': max_issues,
-                'confidence_threshold': confidence_threshold
-            })
+    # Demo section
+    st.subheader("Try Demo")
+    st.markdown("Test the system with sample EDI content")
     
-    # Sample file section
-    st.subheader("📝 Don't have a sample file?")
-    col_sample1, col_sample2 = st.columns(2)
-    
-    with col_sample1:
-        if st.button("Generate Sample EDI"):
-            sample_content = generate_sample_edi()
-            st.code(sample_content, language="text")
-            st.download_button(
-                "Download Sample",
-                sample_content,
-                "sample_278.edi",
-                "text/plain"
-            )
-    
-    with col_sample2:
-        if st.button("🚀 Try Demo Processing"):
-            demo_content = generate_sample_edi()
-            st.session_state['demo_content'] = demo_content
-            st.session_state['demo_mode'] = True
-            # Auto-process demo
-            process_demo_content(demo_content, validate_only, enable_ai_analysis, output_format)
+    if st.button("Process Demo File"):
+        demo_content = generate_sample_edi()
+        process_demo_content(demo_content, validate_only, enable_ai_analysis, output_format)
 
 
-async def process_uploaded_file(uploaded_file, validate_only, enable_ai_analysis, output_format, options=None):
-    """Process the uploaded file with enhanced error handling."""
+def process_uploaded_file_sync(uploaded_file, validate_only, enable_ai_analysis, output_format, options=None):
+    """Process the uploaded file synchronously."""
     
     options = options or {}
     
@@ -338,12 +307,12 @@ async def process_uploaded_file(uploaded_file, validate_only, enable_ai_analysis
             # Choose processing method
             if IS_STREAMLIT_CLOUD or st.session_state.get('force_embedded', False):
                 # Use embedded processing
-                result = await process_with_embedded_service(content, uploaded_file.name, 
+                result = process_with_embedded_service_sync(content, uploaded_file.name, 
                                                            validate_only, enable_ai_analysis, 
                                                            output_format, options)
             else:
                 # Use API processing
-                result = await process_with_api(content, uploaded_file.name, 
+                result = process_with_api_sync(content, uploaded_file.name, 
                                               validate_only, enable_ai_analysis, 
                                               output_format)
             
@@ -357,17 +326,103 @@ async def process_uploaded_file(uploaded_file, validate_only, enable_ai_analysis
             st.exception(e)
 
 
+def process_with_embedded_service_sync(content, filename, validate_only, enable_ai_analysis, output_format, options):
+    """Process using embedded service synchronously."""
+    if not HAS_LOCAL_PROCESSING:
+        st.error("Embedded processing not available")
+        return None
+    
+    try:
+        from app.core.models import EDIFileUpload
+        from app.services.processor import EDIProcessingService
+        
+        # Create processing service
+        processor = EDIProcessingService()
+        
+        # Create upload request
+        upload_request = EDIFileUpload(
+            filename=filename,
+            content_type="text/plain",
+            validate_only=validate_only,
+            enable_ai_analysis=enable_ai_analysis,
+            output_format=output_format
+        )
+        
+        # Process content synchronously using asyncio
+        import asyncio
+        
+        # Create new event loop if needed
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Process content
+        job = loop.run_until_complete(processor.process_content(content, upload_request))
+        
+        # Convert job to API-compatible format
+        result = {
+            "job_id": job.job_id,
+            "status": job.status.value,
+            "message": "Processing completed" if job.status.value == "completed" else "Processing failed"
+        }
+        
+        # Store job in session state for later retrieval
+        if 'jobs' not in st.session_state:
+            st.session_state['jobs'] = {}
+        st.session_state['jobs'][job.job_id] = job
+        
+        return result
+        
+    except Exception as e:
+        st.error(f"Embedded processing failed: {str(e)}")
+        return None
+
+
+def process_with_api_sync(content, filename, validate_only, enable_ai_analysis, output_format):
+    """Process using API synchronously."""
+    try:
+        # Prepare API request
+        data = {
+            "content": content,
+            "filename": filename,
+            "validate_only": validate_only,
+            "enable_ai_analysis": enable_ai_analysis,
+            "output_format": output_format
+        }
+        
+        # Call API
+        response = requests.post(f"{API_BASE_URL}/process", json=data)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"API processing failed: {response.text}")
+            return None
+            
+    except Exception as e:
+        st.error(f"API call failed: {str(e)}")
+        return None
+
+
 def process_demo_content(content, validate_only, enable_ai_analysis, output_format):
     """Process demo content synchronously."""
     try:
-        if IS_STREAMLIT_CLOUD and HAS_LOCAL_PROCESSING:
+        if IS_STREAMLIT_CLOUD or st.session_state.get('force_embedded', False):
             # Use embedded processing for demo
-            result = process_embedded_sync(content, "demo_278.edi", validate_only, 
-                                         enable_ai_analysis, output_format)
+            result = process_with_embedded_service_sync(content, "demo_278.edi", validate_only, 
+                                                       enable_ai_analysis, output_format, {})
             if result:
                 display_processing_results(result, "demo_278.edi")
         else:
-            st.info("Demo processing requires embedded mode")
+            # Use API processing for demo
+            result = process_with_api_sync(content, "demo_278.edi", validate_only, 
+                                          enable_ai_analysis, output_format)
+            if result:
+                display_processing_results(result, "demo_278.edi")
+            else:
+                st.info("Demo processing requires API or embedded mode")
     except Exception as e:
         st.error(f"Demo processing failed: {str(e)}")
 
@@ -409,99 +464,6 @@ async def process_with_embedded_service(content, filename, validate_only, enable
         
     except Exception as e:
         st.error(f"Embedded processing failed: {str(e)}")
-        return None
-
-
-def process_embedded_sync(content, filename, validate_only, enable_ai_analysis, output_format):
-    """Synchronous embedded processing for demo."""
-    try:
-        from app.core.edi_parser import EDI278Parser, EDI278Validator
-        from app.core.fhir_mapper import X12To278FHIRMapper
-        from app.ai.analyzer import EDIAIAnalyzer
-        from app.core.models import EDIFileUpload, ProcessingJob, ProcessingStatus
-        import uuid
-        
-        # Create parser and validator
-        parser = EDI278Parser()
-        validator = EDI278Validator()
-        fhir_mapper = X12To278FHIRMapper()
-        ai_analyzer = EDIAIAnalyzer()
-        
-        # Parse content
-        parsed_edi = parser.parse_content(content, filename)
-        
-        # Validate
-        validation_result = validator.validate(parsed_edi)
-        
-        # FHIR mapping (if not validation only)
-        fhir_mapping = None
-        if not validate_only:
-            try:
-                fhir_result = fhir_mapper.map_to_fhir(parsed_edi)
-                fhir_mapping = fhir_result
-            except Exception as e:
-                st.warning(f"FHIR mapping failed: {str(e)}")
-        
-        # AI analysis (if enabled)
-        ai_analysis = None
-        if enable_ai_analysis:
-            try:
-                ai_analysis = asyncio.run(ai_analyzer.analyze_edi(parsed_edi, validation_result))
-            except Exception as e:
-                st.warning(f"AI analysis failed: {str(e)}")
-        
-        # Create job result
-        job_id = str(uuid.uuid4())
-        job = {
-            'job_id': job_id,
-            'status': 'completed',
-            'parsed_edi': parsed_edi,
-            'validation_result': validation_result,
-            'fhir_mapping': fhir_mapping,
-            'ai_analysis': ai_analysis,
-            'filename': filename,
-            'processing_time': 1.0  # Placeholder
-        }
-        
-        # Store in session state
-        if 'jobs' not in st.session_state:
-            st.session_state['jobs'] = {}
-        st.session_state['jobs'][job_id] = job
-        
-        return {
-            'job_id': job_id,
-            'status': 'completed',
-            'message': 'Processing completed successfully'
-        }
-        
-    except Exception as e:
-        st.error(f"Sync processing failed: {str(e)}")
-        return None
-
-
-async def process_with_api(content, filename, validate_only, enable_ai_analysis, output_format):
-    """Process using API."""
-    try:
-        # Prepare API request
-        data = {
-            "content": content,
-            "filename": filename,
-            "validate_only": validate_only,
-            "enable_ai_analysis": enable_ai_analysis,
-            "output_format": output_format
-        }
-        
-        # Call API
-        response = requests.post(f"{API_BASE_URL}/process", json=data)
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"API processing failed: {response.text}")
-            return None
-            
-    except Exception as e:
-        st.error(f"API call failed: {str(e)}")
         return None
 
 
@@ -1061,33 +1023,33 @@ def display_enhanced_validation_results(result, options):
     is_valid = result.get("is_valid", False)
     tr3_compliance = result.get("tr3_compliance", False)
     
-    # Overall status with enhanced styling
+    # Overall status with professional styling
     if is_valid and tr3_compliance:
-        st.success("🎉 **VALIDATION PASSED!** File is valid and TR3 compliant.")
+        st.success("**VALIDATION PASSED** - File is valid and TR3 compliant.")
     elif is_valid:
-        st.warning("⚠️ **PARTIAL SUCCESS** - File is structurally valid but has TR3 compliance issues.")
+        st.warning("**PARTIAL SUCCESS** - File is structurally valid but has TR3 compliance issues.")
     else:
-        st.error("❌ **VALIDATION FAILED** - File has structural issues that must be addressed.")
+        st.error("**VALIDATION FAILED** - File has structural issues that must be addressed.")
     
     # Enhanced metrics display
     if options.get('show_details', True):
-        st.subheader("📊 Validation Metrics")
+        st.subheader("Validation Metrics")
         
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric("✅ Structural Validity", "PASS" if is_valid else "FAIL")
+            st.metric("Structural Validity", "PASS" if is_valid else "FAIL")
         with col2:
-            st.metric("📜 TR3 Compliance", "PASS" if tr3_compliance else "FAIL")
+            st.metric("TR3 Compliance", "PASS" if tr3_compliance else "FAIL")
         with col3:
             segments_validated = result.get("segments_validated", 0)
-            st.metric("📊 Segments", segments_validated)
+            st.metric("Segments Validated", segments_validated)
         with col4:
             validation_time = result.get("validation_time", 0)
-            st.metric("⏱️ Processing Time", f"{validation_time:.3f}s")
+            st.metric("Processing Time", f"{validation_time:.3f}s")
         with col5:
             issues_count = len(result.get("issues", []))
-            st.metric("🚨 Issues Found", issues_count)
+            st.metric("Issues Found", issues_count)
     
     # Display validation results using the same logic as processing results
     display_validation_section(result, "validation")
@@ -1099,7 +1061,7 @@ def display_enhanced_validation_results(result, options):
     
     # Export options
     if options.get('export_results', True):
-        st.subheader("💾 Export Validation Results")
+        st.subheader("Export Validation Results")
         
         col1, col2 = st.columns(2)
         
@@ -1107,7 +1069,7 @@ def display_enhanced_validation_results(result, options):
             # JSON export
             json_content = json.dumps(result, indent=2, default=str)
             st.download_button(
-                "📄 Download JSON Report",
+                "Download JSON Report",
                 json_content,
                 "validation_report.json",
                 "application/json"
@@ -1120,7 +1082,7 @@ def display_enhanced_validation_results(result, options):
                 issues_df = pd.DataFrame(issues)
                 csv_content = issues_df.to_csv(index=False)
                 st.download_button(
-                    "📊 Download Issues CSV",
+                    "Download Issues CSV",
                     csv_content,
                     "validation_issues.csv",
                     "text/csv"
@@ -1137,19 +1099,19 @@ def display_validation_results(result):
     
     # Overall status
     if is_valid and tr3_compliance:
-        st.success("✅ Validation passed! File is valid and TR3 compliant.")
+        st.success("Validation passed! File is valid and TR3 compliant.")
     elif is_valid:
-        st.warning("⚠️ File is structurally valid but may have TR3 compliance issues.")
+        st.warning("File is structurally valid but may have TR3 compliance issues.")
     else:
-        st.error("❌ Validation failed! File has structural issues.")
+        st.error("Validation failed! File has structural issues.")
     
     # Metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Valid", "✅" if is_valid else "❌")
+        st.metric("Valid", "PASS" if is_valid else "FAIL")
     with col2:
-        st.metric("TR3 Compliant", "✅" if tr3_compliance else "❌")
+        st.metric("TR3 Compliant", "PASS" if tr3_compliance else "FAIL")
     with col3:
         segments_validated = result.get("segments_validated", 0)
         st.metric("Segments Validated", segments_validated)
@@ -1229,12 +1191,12 @@ def display_validation_results(result):
         else:
             st.info("No issues match the selected filter criteria.")
     else:
-        st.success("🎉 No validation issues found!")
+        st.success("No validation issues found!")
     
     # AI Analysis
     ai_analysis = result.get("ai_analysis")
     if ai_analysis:
-        st.subheader("🤖 AI Analysis")
+        st.subheader("AI Analysis")
         
         col1, col2 = st.columns(2)
         
@@ -1250,26 +1212,26 @@ def display_validation_results(result):
         if anomalies:
             st.write("**Detected Anomalies:**")
             for i, anomaly in enumerate(anomalies, 1):
-                st.write(f"{i}. ⚠️ {anomaly}")
+                st.write(f"{i}. {anomaly}")
         
         suggestions = ai_analysis.get("suggested_fixes", [])
         if suggestions:
             st.write("**AI Suggestions:**")
             for i, suggestion in enumerate(suggestions, 1):
-                st.write(f"{i}. 💡 {suggestion}")
+                st.write(f"{i}. {suggestion}")
 
 
 def show_dashboard_page():
     """Show the dashboard with analytics and monitoring."""
     
-    st.header("📊 Dashboard")
+    st.header("Dashboard")
     
     # Add refresh button and auto-refresh
     col1, col2 = st.columns([3, 1])
     with col1:
         st.markdown("Real-time analytics and monitoring")
     with col2:
-        if st.button("🔄 Refresh", help="Clear cache and refresh data"):
+        if st.button("Refresh", help="Clear cache and refresh data"):
             st.cache_data.clear()
             st.rerun()
     
@@ -1400,7 +1362,7 @@ def show_dashboard_page():
             for i, error in enumerate(common_errors[:5]):
                 st.write(f"{i+1}. {error}")
         else:
-            st.success("🎉 No common errors found!")
+            st.success("No common errors found!")
     
     else:
         st.info("No statistics available yet. Process some files to see analytics.")
@@ -1413,27 +1375,27 @@ def show_dashboard_page():
         """)
         
         # Add a test button for debugging
-        if st.button("🔍 Test API Connection"):
+        if st.button("Test API Connection"):
             try:
                 response = requests.get(f"{API_BASE_URL}/health")
                 if response.status_code == 200:
-                    st.success("✅ API is running correctly")
+                    st.success("API is running correctly")
                     # Also test stats endpoint
                     stats_response = requests.get(f"{API_BASE_URL}/stats")
                     if stats_response.status_code == 200:
-                        st.info(f"📊 Stats endpoint working: {stats_response.json()}")
+                        st.info(f"Stats endpoint working: {stats_response.json()}")
                     else:
-                        st.warning(f"⚠️ Stats endpoint issue: {stats_response.status_code}")
+                        st.warning(f"Stats endpoint issue: {stats_response.status_code}")
                 else:
-                    st.error(f"❌ API health check failed: {response.status_code}")
+                    st.error(f"API health check failed: {response.status_code}")
             except Exception as e:
-                st.error(f"❌ Cannot connect to API: {str(e)}")
+                st.error(f"Cannot connect to API: {str(e)}")
 
 
 def show_job_history_page():
     """Show job history and management."""
     
-    st.header("📋 Job History")
+    st.header("Job History")
     
     # Filters
     col1, col2, col3 = st.columns(3)
@@ -1627,8 +1589,9 @@ def test_api_connection(url):
 
 @st.cache_data(ttl=30)  # Reduced TTL from 60 to 30 seconds for faster updates
 def get_statistics():
-    """Get statistics from API (cached)."""
+    """Get statistics from API or session state (cached)."""
     try:
+        # Try API first
         response = requests.get(f"{API_BASE_URL}/stats")
         if response.status_code == 200:
             stats = response.json()
@@ -1642,13 +1605,44 @@ def get_statistics():
             return stats
     except Exception:
         pass
+    
+    # Fallback to session state for embedded mode
+    if 'jobs' in st.session_state:
+        jobs = st.session_state['jobs']
+        total_files = len(jobs)
+        completed_jobs = [job for job in jobs.values() if getattr(job, 'status', 'unknown') == 'completed']
+        failed_jobs = [job for job in jobs.values() if getattr(job, 'status', 'unknown') == 'failed']
+        
+        successful = len(completed_jobs)
+        failed = len(failed_jobs)
+        success_rate = (successful / total_files * 100) if total_files > 0 else 0
+        
+        # Calculate average processing time
+        processing_times = []
+        for job in jobs.values():
+            if hasattr(job, 'processing_time') and job.processing_time:
+                processing_times.append(job.processing_time)
+        
+        avg_time = sum(processing_times) / len(processing_times) if processing_times else 0
+        
+        return {
+            "total_files_processed": total_files,
+            "successful_conversions": successful,
+            "failed_conversions": failed,
+            "success_rate": success_rate,
+            "average_processing_time": avg_time,
+            "most_common_errors": [],
+            "last_updated": datetime.now().isoformat()
+        }
+    
     return None
 
 
 @st.cache_data(ttl=30)
 def get_recent_jobs(limit=20, status=None):
-    """Get recent jobs from API (cached)."""
+    """Get recent jobs from API or session state (cached)."""
     try:
+        # Try API first
         params = {"limit": limit}
         if status:
             params["status"] = status
@@ -1658,6 +1652,30 @@ def get_recent_jobs(limit=20, status=None):
             return response.json()
     except Exception:
         pass
+    
+    # Fallback to session state for embedded mode
+    if 'jobs' in st.session_state:
+        jobs = st.session_state['jobs']
+        job_list = []
+        
+        for job_id, job in jobs.items():
+            job_dict = {
+                "job_id": job_id,
+                "filename": getattr(job, 'filename', 'unknown'),
+                "status": getattr(job, 'status', 'unknown'),
+                "created_at": getattr(job, 'created_at', datetime.now()).isoformat() if hasattr(job, 'created_at') else datetime.now().isoformat(),
+                "processing_time": getattr(job, 'processing_time', None),
+                "file_size": getattr(job, 'file_size', None)
+            }
+            
+            # Filter by status if specified
+            if status is None or job_dict["status"] == status:
+                job_list.append(job_dict)
+        
+        # Sort by created_at (newest first) and limit
+        job_list.sort(key=lambda x: x["created_at"], reverse=True)
+        return job_list[:limit]
+    
     return []
 
 
