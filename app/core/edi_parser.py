@@ -191,8 +191,11 @@ class EDI278Parser:
         try:
             from io import StringIO
             
+            # Pre-process content to handle common ISA version issues
+            processed_content = self._preprocess_edi_content(content)
+            
             # Create string buffer for content
-            fd_in = StringIO(content.strip())
+            fd_in = StringIO(processed_content.strip())
             
             # Initialize pyx12 components with better error handling
             try:
@@ -292,6 +295,40 @@ class EDI278Parser:
         except Exception as e:
             logger.error(f"pyx12 parsing error: {str(e)}")
             raise EDIParsingError(f"pyx12 parsing failed: {str(e)}")
+    
+    def _preprocess_edi_content(self, content: str) -> str:
+        """Pre-process EDI content to handle common compatibility issues."""
+        try:
+            # Handle ISA version compatibility issues
+            lines = content.strip().split('\n')
+            processed_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith('ISA*'):
+                    # Check and fix ISA version format
+                    parts = line.split('*')
+                    if len(parts) >= 12:
+                        # ISA12 is the version number - ensure it's in correct format
+                        version = parts[11]
+                        # Common version mappings for compatibility
+                        version_map = {
+                            '00501': '00401',  # Map 5010 to 4010 for pyx12 compatibility
+                            '501': '00401',
+                            '5010': '00401'
+                        }
+                        if version in version_map:
+                            parts[11] = version_map[version]
+                            line = '*'.join(parts)
+                            logger.debug(f"Mapped ISA version {version} to {version_map[version]} for pyx12 compatibility")
+                
+                processed_lines.append(line)
+            
+            return '\n'.join(processed_lines)
+            
+        except Exception as e:
+            logger.warning(f"EDI preprocessing failed: {e}, using original content")
+            return content
     
     def _process_pyx12_segment(self, seg, position: int) -> Dict[str, Any]:
         """Process a pyx12 segment object into our format."""
