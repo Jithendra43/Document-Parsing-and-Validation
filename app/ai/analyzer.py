@@ -43,8 +43,23 @@ class EDIAIAnalyzer:
         # Initialize Groq client with robust error handling
         if GROQ_AVAILABLE:
             try:
-                # Get API key from environment or settings
-                api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY")
+                # Get API key from multiple sources
+                api_key = None
+                
+                # 1. Check Streamlit secrets (for Streamlit Cloud deployment)
+                try:
+                    import streamlit as st
+                    if hasattr(st, 'secrets') and 'GROQ_API_KEY' in st.secrets:
+                        api_key = st.secrets['GROQ_API_KEY']
+                        logger.info("✅ Found Groq API key in Streamlit secrets")
+                except Exception:
+                    pass  # Streamlit secrets not available
+                
+                # 2. Check settings and environment variables
+                if not api_key:
+                    api_key = settings.groq_api_key or os.getenv("GROQ_API_KEY")
+                    if api_key:
+                        logger.info("✅ Found Groq API key in environment/settings")
                 
                 if api_key and api_key.strip() and api_key != "your_groq_api_key_here":
                     self.groq_client = Groq(api_key=api_key.strip())
@@ -53,6 +68,7 @@ class EDIAIAnalyzer:
                     logger.info(f"🤖 Using model: {self.model}")
                 else:
                     logger.warning("⚠️ Groq API key not provided or invalid")
+                    logger.info("💡 To enable AI analysis, add GROQ_API_KEY to Streamlit secrets or environment variables")
                     
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Groq client: {e}")

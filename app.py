@@ -562,6 +562,12 @@ def display_processing_results(result, filename):
             st.warning(f"Processing completed with warnings: {job_details.error_message}")
         else:
             st.error(f"Processing errors: {job_details.error_message}")
+    elif isinstance(job_details, dict) and job_details.get('error_message'):
+        error_msg = job_details.get('error_message')
+        if "warnings" in error_msg.lower():
+            st.warning(f"Processing completed with warnings: {error_msg}")
+        else:
+            st.error(f"Processing errors: {error_msg}")
     
     # Show processing summary
     st.subheader("Processing Summary")
@@ -658,7 +664,31 @@ def display_processing_results(result, filename):
         display_ai_analysis_section(ai_analysis)
     else:
         st.subheader("AI Analysis & Insights")
-        st.warning("AI analysis not available. This may be due to API limits or processing errors.")
+        
+        # Check if AI should be available
+        try:
+            from app.ai.analyzer import EDIAIAnalyzer
+            analyzer = EDIAIAnalyzer()
+            if analyzer.is_available:
+                st.warning("🤖 AI analysis was enabled but failed during processing. This may be due to API rate limits or temporary service issues.")
+                st.info("💡 **Tip**: AI analysis provides additional insights about document quality, anomalies, and improvement suggestions.")
+            else:
+                st.info("🤖 **AI Analysis Not Configured**")
+                st.markdown("""
+                To enable AI-powered analysis:
+                1. **Get a Groq API key** from [console.groq.com](https://console.groq.com)
+                2. **Add to Streamlit Secrets**: Go to your app settings and add `GROQ_API_KEY = "your_key_here"`
+                3. **Restart the app** to enable AI features
+                
+                **AI Analysis provides:**
+                - 🔍 Anomaly detection
+                - 📊 Pattern analysis  
+                - 💡 Improvement suggestions
+                - ⚠️ Risk assessment
+                """)
+        except Exception as e:
+            st.warning(f"AI analysis system temporarily unavailable: {str(e)}")
+            st.info("The system continues to work normally with rule-based validation and FHIR mapping.")
     
     # FHIR Mapping Section
     if fhir_mapping and status == "completed":
@@ -669,8 +699,12 @@ def display_processing_results(result, filename):
         st.info("This is usually due to validation errors or missing required EDI segments.")
         
         # Show error details if available
-        if hasattr(job_details, 'error_message') or (isinstance(job_details, dict) and 'error_message' in job_details):
-            error_msg = getattr(job_details, 'error_message', None) or job_details.get('error_message')
+        if hasattr(job_details, 'error_message') and job_details.error_message:
+            error_msg = job_details.error_message
+            if error_msg and "fhir" in error_msg.lower():
+                st.error(f"Error: {error_msg}")
+        elif isinstance(job_details, dict) and job_details.get('error_message'):
+            error_msg = job_details.get('error_message')
             if error_msg and "fhir" in error_msg.lower():
                 st.error(f"Error: {error_msg}")
     
@@ -810,6 +844,45 @@ def display_validation_section(validation_result, job_id):
                     st.caption(f"Suggested Fix: {suggested_fix}")
                 
                 st.divider()
+            
+            # Add table view option
+            st.subheader("📊 Table View")
+            
+            # Create a clean display dataframe
+            display_df = filtered_df[['level', 'message', 'segment', 'line_number', 'suggested_fix']].copy()
+            
+            # Add severity icons
+            def add_severity_icon(level):
+                if level.upper() == 'CRITICAL':
+                    return f"🚨 {level}"
+                elif level.upper() == 'ERROR':
+                    return f"❌ {level}"
+                elif level.upper() == 'WARNING':
+                    return f"⚠️ {level}"
+                else:
+                    return f"ℹ️ {level}"
+            
+            display_df['Severity'] = display_df['level'].apply(add_severity_icon)
+            display_df['Message'] = display_df['message']
+            display_df['Segment'] = display_df['segment']
+            display_df['Line'] = display_df['line_number']
+            display_df['Suggested Fix'] = display_df['suggested_fix']
+            
+            # Select only the formatted columns
+            table_df = display_df[['Severity', 'Message', 'Segment', 'Line', 'Suggested Fix']]
+            
+            st.dataframe(
+                table_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Severity": st.column_config.TextColumn(width="small"),
+                    "Message": st.column_config.TextColumn(width="large"),
+                    "Segment": st.column_config.TextColumn(width="small"),
+                    "Line": st.column_config.NumberColumn(width="small"),
+                    "Suggested Fix": st.column_config.TextColumn(width="large")
+                }
+            )
         else:
             st.info("No issues match the selected filters.")
     else:
@@ -1209,79 +1282,54 @@ def validate_edi_content(content, options):
 
 
 def validate_with_embedded_service(content, options):
-    """Validate using embedded service."""
+    """Validate using the embedded production service for consistency."""
     try:
-        processing_service = st.session_state.get('processing_service')
+        # Import the production service
+        from app.services.processor import ProductionEDIProcessingService
         
-        if not processing_service:
-            from app.services.processor import EDIProcessingService
-            processing_service = EDIProcessingService()
-            st.session_state['processing_service'] = processing_service
+        # Create a temporary processor instance
+        processor = ProductionEDIProcessingService()
         
         # Create upload request for validation
-        from app.core.models import EDIFileUpload
         upload_request = EDIFileUpload(
-            filename="validation_content.edi",
+            filename=options.get('filename', 'validation.edi'),
             content_type="text/plain",
-            validate_only=True,
+            validate_only=True,  # Validation only
             enable_ai_analysis=options.get('enable_ai_analysis', True),
             output_format="validation"
         )
         
-        # Process content
-        import asyncio
-        
+        # Process using production service
         async def validate_async():
-            return await processing_service.process_content(content, upload_request)
+            try:
+                job = await processor.process_content(content, upload_request)
+                return job
+            except Exception as e:
+                logger.error(f"Production validation failed: {str(e)}")
+                raise
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        job = loop.run_until_complete(validate_async())
-        
-        # Store in session for later retrieval
-        if 'jobs' not in st.session_state:
-            st.session_state['jobs'] = {}
-        st.session_state['jobs'][job.job_id] = job
-        
-        # Convert job to API-like response
-        result = {
-            "job_id": job.job_id,
-            "filename": "validation_content.edi",
-            "is_valid": job.validation_result.is_valid if job.validation_result else False,
-            "tr3_compliance": job.validation_result.tr3_compliance if job.validation_result else False,
-            "segments_validated": job.validation_result.segments_validated if job.validation_result else 0,
-            "validation_time": job.validation_result.validation_time if job.validation_result else 0,
-            "issues": [],
-            "suggested_improvements": job.validation_result.suggested_improvements if job.validation_result else []
-        }
-        
-        # Add issues
-        if job.validation_result and job.validation_result.issues:
-            for issue in job.validation_result.issues:
-                result["issues"].append({
-                    "level": str(issue.level) if hasattr(issue, 'level') else 'unknown',
-                    "code": issue.code if hasattr(issue, 'code') else 'UNKNOWN',
-                    "message": issue.message if hasattr(issue, 'message') else str(issue),
-                    "segment": issue.segment if hasattr(issue, 'segment') else None,
-                    "line_number": issue.line_number if hasattr(issue, 'line_number') else None,
-                    "suggested_fix": issue.suggested_fix if hasattr(issue, 'suggested_fix') else None
-                })
-        
-        # Add AI analysis if available
-        if job.ai_analysis:
-            result["ai_analysis"] = {
-                "confidence_score": job.ai_analysis.confidence_score,
-                "risk_assessment": job.ai_analysis.risk_assessment,
-                "anomalies_detected": job.ai_analysis.anomalies_detected,
-                "suggested_fixes": job.ai_analysis.suggested_fixes,
-                "pattern_analysis": job.ai_analysis.pattern_analysis
-            }
+        # Run async validation
+        import asyncio
+        try:
+            # Try to get existing event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If loop is running, create a new thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, validate_async())
+                    result = future.result(timeout=30)
+            else:
+                result = loop.run_until_complete(validate_async())
+        except RuntimeError:
+            # No event loop, create new one
+            result = asyncio.run(validate_async())
         
         return result
         
     except Exception as e:
-        st.error(f"Embedded validation failed: {str(e)}")
-        return None
+        logger.error(f"Embedded validation failed: {str(e)}")
+        raise
 
 
 def display_enhanced_validation_results(result, options):
@@ -1832,6 +1880,63 @@ def show_settings_page():
     # Cleanup
     if st.button("Cleanup Old Jobs"):
         cleanup_old_jobs()
+    
+    # AI Configuration Section
+    st.subheader("🤖 AI Analysis Configuration")
+    
+    # Check current AI status
+    try:
+        from app.ai.analyzer import EDIAIAnalyzer
+        analyzer = EDIAIAnalyzer()
+        ai_available = analyzer.is_available
+    except Exception as e:
+        ai_available = False
+        st.error(f"AI system error: {str(e)}")
+    
+    if ai_available:
+        st.success("✅ AI Analysis is properly configured and available")
+        st.info("🤖 AI features include: anomaly detection, pattern analysis, improvement suggestions, and risk assessment")
+    else:
+        st.warning("⚠️ AI Analysis is not configured")
+        
+        st.markdown("""
+        **To enable AI-powered analysis:**
+        
+        1. **Get a Groq API Key:**
+           - Visit [console.groq.com](https://console.groq.com)
+           - Sign up for a free account
+           - Generate an API key
+        
+        2. **Configure in Streamlit Cloud:**
+           - Go to your app settings in Streamlit Cloud
+           - Navigate to the "Secrets" section
+           - Add: `GROQ_API_KEY = "your_api_key_here"`
+           - Save and restart the app
+        
+        3. **For Local Development:**
+           - Create a `.streamlit/secrets.toml` file
+           - Add: `GROQ_API_KEY = "your_api_key_here"`
+           - Restart the application
+        
+        **Benefits of AI Analysis:**
+        - 🔍 **Anomaly Detection**: Identifies unusual patterns in EDI documents
+        - 📊 **Pattern Analysis**: Analyzes document structure and compliance
+        - 💡 **Smart Suggestions**: Provides improvement recommendations
+        - ⚠️ **Risk Assessment**: Evaluates potential processing risks
+        """)
+        
+        # Test API key configuration
+        if st.button("Test AI Configuration"):
+            try:
+                test_analyzer = EDIAIAnalyzer()
+                if test_analyzer.is_available:
+                    st.success("✅ AI configuration test successful!")
+                else:
+                    st.error("❌ AI configuration test failed - check your API key")
+            except Exception as e:
+                st.error(f"❌ AI configuration error: {str(e)}")
+    
+    st.divider()
 
 
 def test_api_connection(url):
@@ -2010,21 +2115,19 @@ def cleanup_old_jobs():
 
 
 def generate_sample_edi():
-    """Generate a sample EDI file."""
-    return """ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *230815*1430*U*00501*000000001*0*P*>~
-GS*HS*SENDER*RECEIVER*20230815*1430*000000001*X*005010X217~
-ST*278*000000001~
-BHT*0078*01*SAMPLE123*20230815*1430~
+    """Generate a valid sample EDI 278 document with proper TR3 compliance."""
+    return """ISA*00*          *00*          *ZZ*SENDER_ID     *ZZ*RECEIVER_ID   *250621*1200*U*00501*000000001*0*P*>~
+GS*HS*SENDER_ID*RECEIVER_ID*20250621*1200*1*X*005010X279A1~
+ST*278*0001~
+BHT*0078*00*REF123*20250621*1200*01~
 HL*1**20*1~
-NM1*41*2*SAMPLE HEALTHCARE*****46*123456789~
+NM1*PR*2*INSURANCE_COMPANY*****PI*12345~
 HL*2*1*21*1~
-NM1*PR*2*SAMPLE INSURANCE*****46*987654321~
+NM1*1P*2*PROVIDER_NAME*****XX*1234567890~
 HL*3*2*22*0~
-NM1*IL*1*DOE*JOHN*****MI*123456789~
-DMG*D8*19850301*M~
-UM*HS*99213*OFFICE VISIT~
-SE*11*000000001~
-GE*1*000000001~
+NM1*IL*1*PATIENT_LAST*PATIENT_FIRST*****MI*123456789~
+SE*10*0001~
+GE*1*1~
 IEA*1*000000001~"""
 
 

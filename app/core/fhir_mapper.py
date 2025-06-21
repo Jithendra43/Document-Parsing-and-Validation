@@ -1,28 +1,9 @@
-"""FHIR mapping for X12 278 EDI transactions following Da Vinci PAS TR3 implementation guide."""
+"""FHIR mapping for X12 278 EDI transactions with robust fallback system."""
 
 import uuid
+import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Union
-from fhir.resources.patient import Patient
-from fhir.resources.practitioner import Practitioner
-from fhir.resources.organization import Organization
-from fhir.resources.coverageeligibilityrequest import CoverageEligibilityRequest
-from fhir.resources.coverageeligibilityresponse import CoverageEligibilityResponse
-from fhir.resources.coverage import Coverage
-from fhir.resources.humanname import HumanName
-from fhir.resources.address import Address
-from fhir.resources.contactpoint import ContactPoint
-from fhir.resources.identifier import Identifier
-from fhir.resources.reference import Reference
-from fhir.resources.codeableconcept import CodeableConcept
-from fhir.resources.coding import Coding
-from fhir.resources.bundle import Bundle
-from fhir.resources.bundle import BundleEntry
-from fhir.resources.period import Period
-from fhir.resources.meta import Meta
-from fhir.resources.money import Money
-from fhir.resources.quantity import Quantity
-from fhir.resources.extension import Extension
 
 from app.core.models import (
     EDI278ParsedData, 
@@ -30,11 +11,128 @@ from app.core.models import (
     ValidationResult,
     EDI278Segment,
     FHIRMapping,
-    FHIRResource
+    FHIRResource as LocalFHIRResource
 )
 from app.core.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Robust FHIR library import with comprehensive fallback
+FHIR_AVAILABLE = False
+try:
+    from fhir.resources.patient import Patient
+    from fhir.resources.practitioner import Practitioner
+    from fhir.resources.organization import Organization
+    from fhir.resources.coverageeligibilityrequest import CoverageEligibilityRequest
+    from fhir.resources.coverageeligibilityresponse import CoverageEligibilityResponse
+    from fhir.resources.coverage import Coverage
+    from fhir.resources.humanname import HumanName
+    from fhir.resources.address import Address
+    from fhir.resources.contactpoint import ContactPoint
+    from fhir.resources.identifier import Identifier
+    from fhir.resources.reference import Reference
+    from fhir.resources.codeableconcept import CodeableConcept
+    from fhir.resources.coding import Coding
+    from fhir.resources.bundle import Bundle
+    from fhir.resources.bundle import BundleEntry
+    from fhir.resources.period import Period
+    from fhir.resources.meta import Meta
+    from fhir.resources.money import Money
+    from fhir.resources.quantity import Quantity
+    from fhir.resources.extension import Extension
+    FHIR_AVAILABLE = True
+    logger.info("✅ FHIR library loaded successfully")
+except ImportError as e:
+    logger.warning(f"⚠️ FHIR library not available: {e}")
+    logger.info("📦 Using fallback FHIR resource creation")
+except Exception as e:
+    logger.error(f"❌ FHIR library error: {e}")
+    logger.info("📦 Using fallback FHIR resource creation")
+
+# Fallback FHIR resource classes when library is not available
+if not FHIR_AVAILABLE:
+    class FallbackFHIRResource:
+        """Fallback FHIR resource that creates dict-based resources."""
+        
+        def __init__(self, resource_type: str = None, **kwargs):
+            self.resource_type = resource_type or self.__class__.__name__
+            self.id = kwargs.get('id', str(uuid.uuid4()))
+            self._data = {
+                'resourceType': self.resource_type,
+                'id': self.id,
+                **kwargs
+            }
+            
+            # Set attributes for compatibility
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+        
+        def dict(self) -> Dict[str, Any]:
+            """Return dict representation."""
+            return self._data.copy()
+        
+        def json(self) -> str:
+            """Return JSON representation."""
+            return json.dumps(self._data, default=str)
+    
+    # Create fallback classes for all FHIR resources
+    class Patient(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('Patient', **kwargs)
+    
+    class Organization(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('Organization', **kwargs)
+    
+    class Practitioner(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('Practitioner', **kwargs)
+    
+    class Coverage(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('Coverage', **kwargs)
+    
+    class CoverageEligibilityRequest(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('CoverageEligibilityRequest', **kwargs)
+    
+    class Bundle(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('Bundle', **kwargs)
+            self.entry = kwargs.get('entry', [])
+    
+    class BundleEntry(FallbackFHIRResource):
+        def __init__(self, **kwargs):
+            super().__init__('BundleEntry', **kwargs)
+            self.resource = kwargs.get('resource')
+    
+    # Simple fallback classes for complex types
+    class HumanName(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    class Identifier(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    class Reference(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    class CodeableConcept(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    class Coding(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    class Meta(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+    
+    # Other simple fallback classes
+    Address = ContactPoint = Period = Money = Quantity = Extension = dict
 
 
 class FHIRMappingError(Exception):
@@ -109,7 +207,7 @@ class X12To278FHIRMapper:
             for entry in bundle.entry:
                 resource = entry.resource
                 resource_dict = resource.dict()
-                fhir_resources.append(FHIRResource(
+                fhir_resources.append(LocalFHIRResource(
                     resource_type=resource_dict.get('resourceType', resource.__class__.__name__),
                     id=resource.id,
                     data=resource_dict
@@ -821,7 +919,7 @@ class ProductionFHIRMapper(X12To278FHIRMapper):
             fhir_resources = []
             for resource_type, resource in resources_created:
                 resource_dict = resource.dict()
-                fhir_resources.append(FHIRResource(
+                fhir_resources.append(LocalFHIRResource(
                     resource_type=resource_dict.get('resourceType', resource_type),
                     id=resource.id,
                     data=resource_dict

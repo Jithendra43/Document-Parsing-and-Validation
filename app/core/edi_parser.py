@@ -977,14 +977,14 @@ class ProductionTR3Validator:
             ))
         else:
             bht_seg = bht_segments[0]
-            if len(bht_seg.elements) < 6:
+            if len(bht_seg.elements) < 4:
                 issues.append(ValidationIssue(
                     level=ValidationLevel.ERROR,
                     code="TR3_BHT_INCOMPLETE",
-                    message=f"BHT segment has {len(bht_seg.elements)} elements, requires minimum 6",
+                    message=f"BHT segment has {len(bht_seg.elements)} elements, requires minimum 4",
                     segment='BHT',
                     line_number=bht_seg.position,
-                    suggested_fix="Complete BHT elements: structure code, purpose, reference ID, date, time, transaction type"
+                    suggested_fix="Complete BHT elements: structure code, purpose, reference ID, date (optional: time, transaction type)"
                 ))
         
         return issues
