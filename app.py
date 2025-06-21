@@ -572,6 +572,17 @@ def display_processing_results(result, filename):
     # Show processing summary
     st.subheader("Processing Summary")
     
+    # Add processing summary chart
+    create_processing_summary_chart(
+        {
+            'parsed_edi': parsed_edi,
+            'validation_result': validation_result,
+            'ai_analysis': ai_analysis,
+            'fhir_mapping': fhir_mapping
+        },
+        filename
+    )
+    
     # Create processing summary columns
     summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
     
@@ -663,7 +674,7 @@ def display_processing_results(result, filename):
     if ai_analysis:
         display_ai_analysis_section(ai_analysis)
     else:
-        st.subheader("AI Analysis & Insights")
+        st.subheader("🤖 AI Analysis & Insights")
         
         # Check if AI should be available
         try:
@@ -694,19 +705,45 @@ def display_processing_results(result, filename):
     if fhir_mapping and status == "completed":
         display_fhir_section(fhir_mapping)
     elif status == "completed":
-        st.subheader("FHIR Transformation")
+        st.subheader("🚫 FHIR Transformation")
         st.error("FHIR mapping failed")
-        st.info("This is usually due to validation errors or missing required EDI segments.")
+        
+        st.markdown("""
+        **Common causes of FHIR mapping failure:**
+        
+        - ❌ **Validation errors** - Critical validation issues prevent FHIR mapping
+        - ❌ **Missing required EDI segments** - Document lacks necessary segments for FHIR conversion
+        - ❌ **Data format issues** - EDI data doesn't conform to expected formats
+        - ❌ **TR3 compliance failures** - Document doesn't meet TR3 implementation guide requirements
+        
+        **To resolve:**
+        1. 🔍 **Check validation results** - Fix all critical and error-level validation issues
+        2. 📋 **Review TR3 compliance** - Ensure document meets TR3 005010X279A1 standards
+        3. 🔧 **Fix EDI structure** - Add missing required segments (ISA, GS, ST, BHT, HL, NM1, etc.)
+        4. ✅ **Re-process** - Upload the corrected document
+        """)
         
         # Show error details if available
         if hasattr(job_details, 'error_message') and job_details.error_message:
             error_msg = job_details.error_message
             if error_msg and "fhir" in error_msg.lower():
-                st.error(f"Error: {error_msg}")
+                st.error(f"**Technical Error:** {error_msg}")
         elif isinstance(job_details, dict) and job_details.get('error_message'):
             error_msg = job_details.get('error_message')
             if error_msg and "fhir" in error_msg.lower():
-                st.error(f"Error: {error_msg}")
+                st.error(f"**Technical Error:** {error_msg}")
+        
+        # Show helpful tips based on validation results if available
+        if validation_result:
+            if hasattr(validation_result, 'issues'):
+                critical_issues = [i for i in validation_result.issues if str(i.level).upper() == 'CRITICAL']
+                error_issues = [i for i in validation_result.issues if str(i.level).upper() == 'ERROR']
+                if critical_issues:
+                    st.warning(f"💡 **Tip:** Fix {len(critical_issues)} critical validation issue(s) first, then retry FHIR mapping")
+                elif error_issues:
+                    st.info(f"💡 **Tip:** Consider fixing {len(error_issues)} error(s) to improve FHIR mapping success")
+        
+        st.info("💡 **Note:** FHIR mapping requires a valid, TR3-compliant EDI document. Address validation issues first.")
     
     # Download Section - Always show if we have a job_id
     if job_id:
@@ -775,6 +812,10 @@ def display_validation_section(validation_result, job_id):
     # Issues table
     if issues:
         st.subheader(f"Validation Issues ({len(issues)} found)")
+        
+        # Add validation charts
+        st.subheader("📊 Validation Analytics")
+        create_validation_charts({'issues': issues}, 'validation_job')
         
         # Convert issues to DataFrame
         if issues and (hasattr(issues[0], 'model_dump') or hasattr(issues[0], 'dict')):
@@ -890,8 +931,8 @@ def display_validation_section(validation_result, job_id):
 
 
 def display_ai_analysis_section(ai_analysis):
-    """Display AI analysis results."""
-    st.subheader("AI Analysis & Insights")
+    """Display AI analysis results with enhanced colors and presentation."""
+    st.subheader("🤖 AI Analysis & Insights")
     
     # Extract AI data
     if hasattr(ai_analysis, 'dict'):
@@ -906,35 +947,102 @@ def display_ai_analysis_section(ai_analysis):
             'suggested_fixes': getattr(ai_analysis, 'suggested_fixes', [])
         }
     
-    # AI metrics
+    # AI metrics with enhanced colors
     col1, col2, col3 = st.columns(3)
     
     with col1:
         confidence_score = ai_data.get('confidence_score', 0)
-        confidence_color = "green" if confidence_score >= 0.8 else "orange" if confidence_score >= 0.6 else "red"
-        st.metric("Confidence Score", f"{confidence_score:.2f}", delta=None)
+        if confidence_score >= 0.8:
+            st.success(f"🎯 **Confidence Score: {confidence_score:.2f}**")
+            st.caption("High confidence - AI analysis is very reliable")
+        elif confidence_score >= 0.6:
+            st.warning(f"⚠️ **Confidence Score: {confidence_score:.2f}**")
+            st.caption("Medium confidence - AI analysis is moderately reliable")
+        else:
+            st.error(f"🔍 **Confidence Score: {confidence_score:.2f}**")
+            st.caption("Low confidence - AI analysis may need human review")
     
     with col2:
         risk_level = ai_data.get('risk_assessment', 'unknown').upper()
-        risk_color = "green" if risk_level == "LOW" else "orange" if risk_level == "MEDIUM" else "red"
-        st.metric("Risk Level", risk_level)
+        if risk_level == "LOW":
+            st.success(f"✅ **Risk Level: {risk_level}**")
+            st.caption("Document appears safe for processing")
+        elif risk_level == "MEDIUM":
+            st.warning(f"⚠️ **Risk Level: {risk_level}**")
+            st.caption("Some potential issues detected")
+        elif risk_level == "HIGH":
+            st.error(f"🚨 **Risk Level: {risk_level}**")
+            st.caption("Significant issues require attention")
+        else:
+            st.info(f"❓ **Risk Level: {risk_level}**")
+            st.caption("Risk assessment unavailable")
     
     with col3:
         anomalies = ai_data.get("anomalies_detected", [])
-        st.metric("Anomalies", len(anomalies))
+        anomaly_count = len(anomalies)
+        if anomaly_count == 0:
+            st.success(f"🎉 **Anomalies: {anomaly_count}**")
+            st.caption("No anomalies detected")
+        elif anomaly_count <= 2:
+            st.warning(f"🔍 **Anomalies: {anomaly_count}**")
+            st.caption("Minor anomalies found")
+        else:
+            st.error(f"⚠️ **Anomalies: {anomaly_count}**")
+            st.caption("Multiple anomalies detected")
     
-    # Anomalies display
+    # Enhanced anomalies display
     if anomalies:
-        st.write("**Detected Anomalies:**")
+        st.markdown("### 🔍 **Detected Anomalies**")
         for i, anomaly in enumerate(anomalies, 1):
-            st.warning(f"{i}. {anomaly}")
+            if "critical" in anomaly.lower() or "error" in anomaly.lower():
+                st.error(f"🚨 **{i}.** {anomaly}")
+            elif "warning" in anomaly.lower() or "issue" in anomaly.lower():
+                st.warning(f"⚠️ **{i}.** {anomaly}")
+            else:
+                st.info(f"🔍 **{i}.** {anomaly}")
+    else:
+        st.success("🎉 **No anomalies detected!** The document appears to be well-structured.")
     
-    # AI suggestions
+    # Enhanced AI suggestions
     suggestions = ai_data.get("suggested_fixes", [])
     if suggestions:
-        st.write("**AI Recommendations:**")
+        st.markdown("### 💡 **AI Recommendations**")
         for i, suggestion in enumerate(suggestions, 1):
-            st.info(f"{i}. {suggestion}")
+            if "✅" in suggestion or "successful" in suggestion.lower() or "good" in suggestion.lower():
+                st.success(f"✅ **{i}.** {suggestion}")
+            elif "fix" in suggestion.lower() or "error" in suggestion.lower() or "critical" in suggestion.lower():
+                st.error(f"🔧 **{i}.** {suggestion}")
+            elif "review" in suggestion.lower() or "check" in suggestion.lower() or "warning" in suggestion.lower():
+                st.warning(f"📋 **{i}.** {suggestion}")
+            else:
+                st.info(f"💡 **{i}.** {suggestion}")
+    else:
+        st.info("💡 **No specific recommendations** - Document appears to be in good condition.")
+    
+    # Pattern analysis (if available)
+    pattern_analysis = ai_data.get("pattern_analysis", {})
+    if pattern_analysis and isinstance(pattern_analysis, dict):
+        with st.expander("📊 **Advanced Pattern Analysis**"):
+            for key, value in pattern_analysis.items():
+                if key == "quality_score":
+                    quality = float(value) if isinstance(value, (int, float, str)) else 0.0
+                    if quality >= 0.8:
+                        st.success(f"🏆 **Quality Score:** {quality}")
+                    elif quality >= 0.6:
+                        st.warning(f"📊 **Quality Score:** {quality}")
+                    else:
+                        st.error(f"📉 **Quality Score:** {quality}")
+                elif key == "analysis_type":
+                    st.info(f"🔬 **Analysis Type:** {value}")
+                elif key == "overall_assessment":
+                    if "high_quality" in str(value).lower():
+                        st.success(f"🎯 **Assessment:** {value}")
+                    elif "acceptable" in str(value).lower():
+                        st.warning(f"📋 **Assessment:** {value}")
+                    else:
+                        st.error(f"⚠️ **Assessment:** {value}")
+                else:
+                    st.caption(f"**{key.replace('_', ' ').title()}:** {value}")
 
 
 def display_fhir_section(fhir_mapping):
@@ -1284,8 +1392,11 @@ def validate_edi_content(content, options):
 def validate_with_embedded_service(content, options):
     """Validate using the embedded production service for consistency."""
     try:
-        # Import the production service
+        # Import the production service and logger
         from app.services.processor import ProductionEDIProcessingService
+        from app.core.logger import get_logger
+        
+        logger = get_logger(__name__)
         
         # Create a temporary processor instance
         processor = ProductionEDIProcessingService()
@@ -1328,7 +1439,13 @@ def validate_with_embedded_service(content, options):
         return result
         
     except Exception as e:
-        logger.error(f"Embedded validation failed: {str(e)}")
+        # Create logger here if not available above
+        try:
+            from app.core.logger import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Embedded validation failed: {str(e)}")
+        except:
+            pass  # Fallback if logger import fails
         raise
 
 
@@ -1383,6 +1500,10 @@ def display_enhanced_validation_results(result, options):
     if issues:
         st.subheader(f"Validation Issues ({len(issues)})")
         
+        # Add validation charts
+        st.subheader("📊 Validation Analytics")
+        create_validation_charts({'issues': issues}, 'validation_job')
+        
         # Filter options
         col1, col2 = st.columns(2)
         with col1:
@@ -1417,29 +1538,7 @@ def display_enhanced_validation_results(result, options):
     # AI Analysis (if available)
     ai_analysis = result.get("ai_analysis")
     if ai_analysis and options.get('show_details', True):
-        st.subheader("AI Analysis")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            confidence = ai_analysis.get("confidence_score", 0)
-            st.metric("Confidence Score", f"{confidence:.2f}")
-        with col2:
-            risk = ai_analysis.get("risk_assessment", "unknown").upper()
-            st.metric("Risk Assessment", risk)
-        with col3:
-            anomalies = ai_analysis.get("anomalies_detected", [])
-            st.metric("Anomalies Found", len(anomalies))
-        
-        if anomalies:
-            st.write("**Detected Anomalies:**")
-            for anomaly in anomalies:
-                st.warning(anomaly)
-        
-        suggestions = ai_analysis.get("suggested_fixes", [])
-        if suggestions:
-            st.write("**AI Recommendations:**")
-            for suggestion in suggestions:
-                st.info(suggestion)
+        display_ai_analysis_section(ai_analysis)
     
     # Export options
     if options.get('export_results', True):
@@ -1576,14 +1675,17 @@ def show_dashboard_page():
             if last_updated:
                 if isinstance(last_updated, str):
                     try:
-                        last_updated = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                        last_updated_dt = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+                        last_updated_str = last_updated_dt.strftime("%Y-%m-%d %H:%M:%S")
                     except:
-                        last_updated = "Unknown"
+                        last_updated_str = "Unknown"
+                elif hasattr(last_updated, 'strftime'):
+                    last_updated_str = last_updated.strftime("%Y-%m-%d %H:%M:%S")
                 else:
-                    last_updated = last_updated.strftime("%Y-%m-%d %H:%M:%S")
+                    last_updated_str = str(last_updated)
             else:
-                last_updated = "Never"
-            st.metric("Last Updated", last_updated)
+                last_updated_str = "Never"
+            st.metric("Last Updated", last_updated_str)
         
         # Charts and Graphs
         st.subheader("Processing Analytics")
@@ -1640,18 +1742,36 @@ def show_dashboard_page():
             job_data = []
             for job in recent_jobs:
                 if isinstance(job, dict):
+                    created_at = job.get("created_at", "Unknown")
+                    if hasattr(created_at, 'strftime'):
+                        time_str = created_at.strftime("%Y-%m-%d %H:%M")
+                    elif isinstance(created_at, str):
+                        try:
+                            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            time_str = dt.strftime("%Y-%m-%d %H:%M")
+                        except:
+                            time_str = str(created_at)
+                    else:
+                        time_str = str(created_at)
+                    
                     job_data.append({
                         "Job ID": job.get("job_id", "Unknown")[:8] + "...",
                         "Filename": job.get("filename", "Unknown"),
                         "Status": job.get("status", "Unknown").upper(),
-                        "Time": job.get("created_at", "Unknown")
+                        "Time": time_str
                     })
                 else:
+                    created_at = getattr(job, 'created_at', 'Unknown')
+                    if hasattr(created_at, 'strftime'):
+                        time_str = created_at.strftime("%Y-%m-%d %H:%M")
+                    else:
+                        time_str = str(created_at)
+                    
                     job_data.append({
                         "Job ID": getattr(job, 'job_id', 'Unknown')[:8] + "...",
                         "Filename": getattr(job, 'filename', 'Unknown'),
                         "Status": str(getattr(job, 'status', 'Unknown')).upper(),
-                        "Time": str(getattr(job, 'created_at', 'Unknown'))
+                        "Time": time_str
                     })
             
             if job_data:
@@ -1853,8 +1973,8 @@ def show_settings_page():
     st.subheader("System Information")
     
     health = check_api_health()
-    if health["healthy"]:
-        health_data = health["data"]
+    if health.get("healthy", False):
+        health_data = health.get("data", {})
         
         col1, col2 = st.columns(2)
         
@@ -1869,6 +1989,9 @@ def show_settings_page():
             for component, status in components.items():
                 icon = "✅" if status == "healthy" else "❌" if status == "unhealthy" else "⚠️"
                 st.write(f"{icon} {component.title()}: {status}")
+    else:
+        st.error("❌ API Health Check Failed")
+        st.write("Unable to retrieve system information. Check API connection.")
     
     # Cache Management
     st.subheader("Cache Management")
@@ -2129,6 +2252,202 @@ NM1*IL*1*PATIENT_LAST*PATIENT_FIRST*****MI*123456789~
 SE*10*0001~
 GE*1*1~
 IEA*1*000000001~"""
+
+
+def create_validation_charts(validation_result, job_id):
+    """Create charts and visualizations for validation results."""
+    
+    # Extract validation data
+    if hasattr(validation_result, 'model_dump') or hasattr(validation_result, 'dict'):
+        val_data = safe_model_dump(validation_result)
+    elif isinstance(validation_result, dict):
+        val_data = validation_result
+    else:
+        val_data = {
+            'is_valid': getattr(validation_result, 'is_valid', False),
+            'tr3_compliance': getattr(validation_result, 'tr3_compliance', False),
+            'issues': getattr(validation_result, 'issues', [])
+        }
+    
+    issues = val_data.get('issues', [])
+    
+    if not issues:
+        # Create a success chart
+        fig = go.Figure(data=[go.Pie(
+            labels=['Valid Document'],
+            values=[1],
+            marker_colors=['#28a745'],
+            textinfo='label+percent',
+            textfont_size=16
+        )])
+        fig.update_layout(
+            title="📊 Validation Status",
+            showlegend=False,
+            height=300
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        return
+    
+    # Count issues by severity
+    issue_counts = {}
+    for issue in issues:
+        if isinstance(issue, dict):
+            level = issue.get('level', 'unknown').upper()
+        else:
+            level = getattr(issue, 'level', 'unknown').upper()
+        issue_counts[level] = issue_counts.get(level, 0) + 1
+    
+    if issue_counts:
+        # Create charts in columns
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Pie chart for issue distribution
+            labels = list(issue_counts.keys())
+            values = list(issue_counts.values())
+            
+            # Define colors for each severity level
+            colors = []
+            for label in labels:
+                if label == 'CRITICAL':
+                    colors.append('#dc3545')  # Red
+                elif label == 'ERROR':
+                    colors.append('#fd7e14')  # Orange
+                elif label == 'WARNING':
+                    colors.append('#ffc107')  # Yellow
+                else:
+                    colors.append('#17a2b8')  # Blue
+            
+            fig_pie = go.Figure(data=[go.Pie(
+                labels=labels,
+                values=values,
+                marker_colors=colors,
+                textinfo='label+value+percent',
+                textfont_size=12
+            )])
+            fig_pie.update_layout(
+                title="📊 Issues by Severity",
+                showlegend=True,
+                height=300
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+        
+        with col2:
+            # Bar chart for issue counts
+            fig_bar = go.Figure(data=[go.Bar(
+                x=labels,
+                y=values,
+                marker_color=colors,
+                text=values,
+                textposition='auto',
+            )])
+            fig_bar.update_layout(
+                title="📈 Issue Count by Severity",
+                xaxis_title="Severity Level",
+                yaxis_title="Number of Issues",
+                height=300
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        # Segment analysis if available
+        segment_counts = {}
+        for issue in issues:
+            if isinstance(issue, dict):
+                segment = issue.get('segment', 'Unknown')
+            else:
+                segment = getattr(issue, 'segment', 'Unknown')
+            if segment and segment != 'N/A':
+                segment_counts[segment] = segment_counts.get(segment, 0) + 1
+        
+        if segment_counts and len(segment_counts) > 1:
+            st.subheader("📋 Issues by Segment")
+            
+            segments = list(segment_counts.keys())
+            counts = list(segment_counts.values())
+            
+            fig_segments = go.Figure(data=[go.Bar(
+                x=segments,
+                y=counts,
+                marker_color='#6c757d',
+                text=counts,
+                textposition='auto',
+            )])
+            fig_segments.update_layout(
+                title="Issues Distribution by EDI Segment",
+                xaxis_title="EDI Segment",
+                yaxis_title="Number of Issues",
+                height=300
+            )
+            st.plotly_chart(fig_segments, use_container_width=True)
+
+
+def create_processing_summary_chart(result, filename):
+    """Create a processing summary chart."""
+    
+    # Extract processing metrics
+    validation_result = result.get('validation_result')
+    ai_analysis = result.get('ai_analysis')
+    fhir_mapping = result.get('fhir_mapping')
+    
+    # Create processing status data
+    processing_steps = []
+    
+    # EDI Parsing
+    if result.get('parsed_edi'):
+        processing_steps.append(('EDI Parsing', 'Success', '#28a745'))
+    else:
+        processing_steps.append(('EDI Parsing', 'Failed', '#dc3545'))
+    
+    # Validation
+    if validation_result:
+        if validation_result.get('is_valid', False):
+            processing_steps.append(('Validation', 'Success', '#28a745'))
+        else:
+            processing_steps.append(('Validation', 'Issues Found', '#ffc107'))
+    else:
+        processing_steps.append(('Validation', 'Failed', '#dc3545'))
+    
+    # AI Analysis
+    if ai_analysis:
+        confidence = ai_analysis.get('confidence_score', 0)
+        if confidence >= 0.8:
+            processing_steps.append(('AI Analysis', 'High Confidence', '#28a745'))
+        elif confidence >= 0.6:
+            processing_steps.append(('AI Analysis', 'Medium Confidence', '#ffc107'))
+        else:
+            processing_steps.append(('AI Analysis', 'Low Confidence', '#fd7e14'))
+    else:
+        processing_steps.append(('AI Analysis', 'Not Available', '#6c757d'))
+    
+    # FHIR Mapping
+    if fhir_mapping:
+        processing_steps.append(('FHIR Mapping', 'Success', '#28a745'))
+    else:
+        processing_steps.append(('FHIR Mapping', 'Failed', '#dc3545'))
+    
+    # Create horizontal bar chart
+    steps, statuses, colors = zip(*processing_steps)
+    
+    fig = go.Figure(data=[go.Bar(
+        y=steps,
+        x=[1] * len(steps),  # All bars same length
+        orientation='h',
+        marker_color=colors,
+        text=statuses,
+        textposition='middle',
+        textfont_size=12
+    )])
+    
+    fig.update_layout(
+        title=f"🔄 Processing Pipeline Status - {filename}",
+        xaxis_title="",
+        yaxis_title="Processing Steps",
+        height=300,
+        showlegend=False,
+        xaxis={'showticklabels': False}
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 
 if __name__ == "__main__":
