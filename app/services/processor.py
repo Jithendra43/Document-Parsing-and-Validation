@@ -20,6 +20,19 @@ from ..core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def safe_model_dump(obj) -> Dict[str, Any]:
+    """Safely convert Pydantic model to dict with fallback."""
+    try:
+        if hasattr(obj, 'model_dump'):
+            return obj.model_dump()
+        elif hasattr(obj, 'dict'):
+            return obj.dict()
+        else:
+            return obj.__dict__ if hasattr(obj, '__dict__') else {}
+    except Exception:
+        return {}
+
+
 class EDIProcessingError(Exception):
     """Custom exception for EDI processing errors."""
     pass
@@ -401,6 +414,158 @@ class ProductionEDIProcessingService:
                 'error': str(e),
                 'blocking_issues': ['Production readiness check system failure']
             }
+
+    async def export_results(self, job_id: str, format: str) -> Optional[str]:
+        """
+        Export job results in specified format with comprehensive error handling.
+        
+        Args:
+            job_id: Job identifier
+            format: Export format (json, xml, edi, validation)
+            
+        Returns:
+            Exported content as string or None if job not found
+            
+        Raises:
+            EDIProcessingError: If export fails or format not supported
+        """
+        try:
+            # Get job
+            if job_id not in self.jobs:
+                return None
+            
+            job = self.jobs[job_id]
+            
+            if format == "json":
+                # Export complete job data as JSON
+                job_data = {
+                    "job_id": job.job_id,
+                    "filename": job.filename,
+                    "status": job.status.value,
+                    "created_at": job.created_at.isoformat(),
+                    "processing_time": job.processing_time,
+                    "validation_result": safe_model_dump(job.validation_result) if job.validation_result else None,
+                    "fhir_mapping": safe_model_dump(job.fhir_mapping) if job.fhir_mapping else None,
+                    "ai_analysis": safe_model_dump(job.ai_analysis) if job.ai_analysis else None
+                }
+                return json.dumps(job_data, indent=2, default=str)
+                
+            elif format == "xml":
+                # Export FHIR resources as XML
+                if not job.fhir_mapping or not job.fhir_mapping.resources:
+                    raise EDIProcessingError("No FHIR mapping available for XML export")
+                
+                # Convert FHIR resources to XML format
+                try:
+                    import xml.etree.ElementTree as ET
+                    
+                    # Create root element
+                    root = ET.Element("Bundle")
+                    root.set("xmlns", "http://hl7.org/fhir")
+                    
+                    # Add metadata
+                    meta = ET.SubElement(root, "meta")
+                    profile = ET.SubElement(meta, "profile")
+                    profile.set("value", "http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-pas-request-bundle")
+                    
+                    # Add resources
+                    for resource in job.fhir_mapping.resources:
+                        entry = ET.SubElement(root, "entry")
+                        resource_element = ET.SubElement(entry, "resource")
+                        
+                        # Add resource type
+                        res_type = ET.SubElement(resource_element, resource.resource_type)
+                        res_type.set("xmlns", "http://hl7.org/fhir")
+                        
+                        # Add resource ID
+                        if resource.id:
+                            id_elem = ET.SubElement(res_type, "id")
+                            id_elem.set("value", resource.id)
+                        
+                        # Add basic resource data (simplified XML conversion)
+                        for key, value in resource.data.items():
+                            if key not in ['resourceType', 'id'] and isinstance(value, (str, int, float, bool)):
+                                elem = ET.SubElement(res_type, key)
+                                elem.set("value", str(value))
+                    
+                    # Convert to string
+                    return ET.tostring(root, encoding='unicode', method='xml')
+                    
+                except Exception as xml_error:
+                    logger.error(f"XML conversion failed: {xml_error}")
+                    raise EDIProcessingError(f"Failed to convert FHIR to XML: {str(xml_error)}")
+                
+            elif format == "edi":
+                # Export original or processed EDI content
+                if job.parsed_edi and job.parsed_edi.raw_content:
+                    return job.parsed_edi.raw_content
+                else:
+                    raise EDIProcessingError("No EDI content available for export")
+                    
+            elif format == "validation":
+                # Export validation report
+                if not job.validation_result:
+                    raise EDIProcessingError("No validation results available")
+                
+                validation_report = {
+                    "job_id": job.job_id,
+                    "filename": job.filename,
+                    "validation_summary": {
+                        "is_valid": job.validation_result.is_valid,
+                        "tr3_compliance": job.validation_result.tr3_compliance,
+                        "segments_validated": job.validation_result.segments_validated,
+                        "validation_time": job.validation_result.validation_time
+                    },
+                    "issues": [
+                        {
+                            "level": issue.level.value if hasattr(issue.level, 'value') else str(issue.level),
+                            "code": issue.code,
+                            "message": issue.message,
+                            "segment": issue.segment,
+                            "line_number": issue.line_number,
+                            "suggested_fix": issue.suggested_fix
+                        }
+                        for issue in job.validation_result.issues
+                    ],
+                    "suggested_improvements": job.validation_result.suggested_improvements,
+                    "generated_at": datetime.utcnow().isoformat()
+                }
+                return json.dumps(validation_report, indent=2, default=str)
+                
+            else:
+                raise EDIProcessingError(f"Unsupported export format: {format}")
+                
+        except EDIProcessingError:
+            # Re-raise EDI processing errors
+            raise
+        except Exception as e:
+            logger.error(f"Export failed for job {job_id}: {str(e)}")
+            raise EDIProcessingError(f"Export failed: {str(e)}")
+
+    def get_job(self, job_id: str) -> Optional[ProcessingJob]:
+        """Get job by ID."""
+        return self.jobs.get(job_id)
+
+    def get_all_jobs(self) -> Dict[str, ProcessingJob]:
+        """Get all jobs."""
+        return self.jobs.copy()
+
+    async def cleanup_old_jobs(self, max_age_hours: int = 24):
+        """Clean up old jobs."""
+        try:
+            cutoff_time = datetime.utcnow() - timedelta(hours=max_age_hours)
+            jobs_to_remove = [
+                job_id for job_id, job in self.jobs.items()
+                if job.created_at < cutoff_time
+            ]
+            
+            for job_id in jobs_to_remove:
+                del self.jobs[job_id]
+                
+            logger.info(f"Cleaned up {len(jobs_to_remove)} old jobs")
+            
+        except Exception as e:
+            logger.error(f"Job cleanup failed: {str(e)}")
 
 
 # Maintain compatibility with existing code

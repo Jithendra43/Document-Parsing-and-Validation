@@ -261,7 +261,7 @@ class X12To278FHIRMapper:
             if hasattr(organization, 'name') and organization.name:
                 insurer_name = organization.name
             
-            # Create insurer as single Reference object (not list)
+            # Create insurer as single Reference object (not list) - CRITICAL FIX
             coverage_data["insurer"] = {
                 "reference": f"Organization/{organization.id}",
                 "display": insurer_name

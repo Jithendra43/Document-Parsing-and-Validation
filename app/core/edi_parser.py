@@ -302,26 +302,8 @@ class EDI278Parser:
             # Handle ISA version compatibility issues
             processed_content = content.strip()
             
-            # Enhanced ISA version preprocessing with multiple patterns
-            isa_patterns = [
-                # Pattern: ISA*...*...*U*00501*
-                (r'(ISA\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*)00501(\*[^*]*\*[^*]*\*[^~]*~)', r'\g<1>00401\g<2>'),
-                # Pattern: ISA*...*U*501*
-                (r'(ISA\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*)501(\*[^*]*\*[^*]*\*[^~]*~)', r'\g<1>00401\g<2>'),
-                # Pattern: ISA*...*U*5010*
-                (r'(ISA\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*)5010(\*[^*]*\*[^*]*\*[^~]*~)', r'\g<1>00401\g<2>'),
-            ]
-            
-            original_content = processed_content
-            for pattern, replacement in isa_patterns:
-                new_content = re.sub(pattern, replacement, processed_content)
-                if new_content != processed_content:
-                    logger.info(f"ISA version compatibility fix applied: {pattern}")
-                    processed_content = new_content
-                    break
-            
-            # If regex patterns didn't work, try manual parsing
-            if processed_content == original_content and 'ISA*' in processed_content:
+            # Fix ISA segment formatting issues that cause pyx12 to see "401*0" instead of "00401"
+            if 'ISA*' in processed_content:
                 lines = processed_content.split('\n')
                 processed_lines = []
                 
@@ -330,9 +312,10 @@ class EDI278Parser:
                     if line.startswith('ISA*'):
                         # Split by * and fix ISA version (position 12, index 11)
                         parts = line.split('*')
-                        if len(parts) >= 12:
-                            version = parts[11]
-                            # Enhanced version mappings for compatibility
+                        if len(parts) >= 16:  # ISA should have exactly 16 elements
+                            version = parts[11]  # ISA12 - Interchange Control Version Number
+                            
+                            # Enhanced version mappings for pyx12 compatibility
                             version_map = {
                                 '00501': '00401',  # Map 5010 to 4010 for pyx12 compatibility
                                 '501': '00401',
@@ -340,17 +323,58 @@ class EDI278Parser:
                                 '00500': '00401',
                                 '500': '00401'
                             }
+                            
                             if version in version_map:
                                 parts[11] = version_map[version]
-                                line = '*'.join(parts)
-                                logger.info(f"Manual ISA version mapping: {version} → {version_map[version]}")
+                                logger.info(f"ISA version mapping: {version} → {version_map[version]}")
+                            
+                            # Ensure ISA segment has proper formatting
+                            # ISA*00*          *00*          *ZZ*SENDER_ID     *ZZ*RECEIVER_ID   *YYMMDD*HHMM*U*00401*000000001*0*P*>~
+                            
+                            # Fix common formatting issues
+                            if len(parts) == 16:
+                                # Ensure proper element padding/formatting
+                                if len(parts[1]) == 0:  # Authorization Information Qualifier
+                                    parts[1] = '00'
+                                if len(parts[2]) < 10:  # Authorization Information (pad to 10)
+                                    parts[2] = parts[2].ljust(10)
+                                if len(parts[3]) == 0:  # Security Information Qualifier
+                                    parts[3] = '00'
+                                if len(parts[4]) < 10:  # Security Information (pad to 10)
+                                    parts[4] = parts[4].ljust(10)
+                                if len(parts[5]) == 0:  # Interchange ID Qualifier
+                                    parts[5] = 'ZZ'
+                                if len(parts[6]) < 15:  # Interchange Sender ID (pad to 15)
+                                    parts[6] = parts[6].ljust(15)
+                                if len(parts[7]) == 0:  # Interchange ID Qualifier
+                                    parts[7] = 'ZZ'
+                                if len(parts[8]) < 15:  # Interchange Receiver ID (pad to 15)
+                                    parts[8] = parts[8].ljust(15)
+                                # parts[9] = date (YYMMDD)
+                                # parts[10] = time (HHMM)
+                                if len(parts[10]) == 0:  # Interchange Control Standards Identifier
+                                    parts[10] = 'U'
+                                # parts[11] = version (already fixed above)
+                                if len(parts[12]) < 9:  # Interchange Control Number (pad to 9)
+                                    parts[12] = parts[12].zfill(9)
+                                if len(parts[13]) == 0:  # Acknowledgment Requested
+                                    parts[13] = '0'
+                                if len(parts[14]) == 0:  # Usage Indicator
+                                    parts[14] = 'P'
+                                if len(parts[15]) == 0:  # Component Element Separator
+                                    parts[15] = '>'
+                            
+                            line = '*'.join(parts)
+                            logger.info("✅ ISA segment formatting normalized for pyx12 compatibility")
+                        else:
+                            logger.warning(f"ISA segment has {len(parts)} elements, expected 16")
                     
                     processed_lines.append(line)
                 
                 processed_content = '\n'.join(processed_lines)
             
-            # Additional pyx12 compatibility fixes
-            if processed_content != original_content:
+            # Additional regex-based fixes for edge cases
+            if processed_content != content.strip():
                 logger.info("✅ ISA version preprocessing completed for pyx12 compatibility")
             
             return processed_content
