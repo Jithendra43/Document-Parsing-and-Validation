@@ -216,7 +216,16 @@ class EDI278Parser:
                 
             except Exception as init_error:
                 logger.error(f"Enhanced pyx12 parsing error: {init_error}")
-                raise EDIParsingError(f"Enhanced pyx12 parsing failed: {init_error}")
+                # Check for specific pyx12 issues and provide better error handling
+                error_msg = str(init_error)
+                if "ISA Interchange Control Version Number is unknown" in error_msg:
+                    logger.warning("pyx12 ISA control version issue - falling back to manual parsing")
+                    raise EDIParsingError(f"pyx12 ISA version incompatibility: {init_error}")
+                elif "No segments processed by pyx12" in error_msg:
+                    logger.warning("pyx12 unable to process segments - falling back to manual parsing")
+                    raise EDIParsingError(f"pyx12 segment processing failed: {init_error}")
+                else:
+                    raise EDIParsingError(f"Enhanced pyx12 parsing failed: {init_error}")
             
             # Parse segments using pyx12
             segments = []
