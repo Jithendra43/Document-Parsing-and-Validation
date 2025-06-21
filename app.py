@@ -1285,32 +1285,61 @@ def display_download_section(job_id, filename, job_details):
 
 def generate_validation_report(validation_result, filename):
     """Generate a comprehensive validation report."""
+    
+    # Handle both dict and object access patterns
+    if isinstance(validation_result, dict):
+        is_valid = validation_result.get('is_valid', False)
+        tr3_compliance = validation_result.get('tr3_compliance', False)
+        segments_validated = validation_result.get('segments_validated', 0)
+        validation_time = validation_result.get('validation_time', 0)
+        issues = validation_result.get('issues', [])
+        suggested_improvements = validation_result.get('suggested_improvements', [])
+    else:
+        is_valid = getattr(validation_result, 'is_valid', False)
+        tr3_compliance = getattr(validation_result, 'tr3_compliance', False)
+        segments_validated = getattr(validation_result, 'segments_validated', 0)
+        validation_time = getattr(validation_result, 'validation_time', 0)
+        issues = getattr(validation_result, 'issues', [])
+        suggested_improvements = getattr(validation_result, 'suggested_improvements', [])
+    
     report = f"""
 EDI X12 278 VALIDATION REPORT
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 File: {filename}
 
 VALIDATION SUMMARY
-- Valid: {validation_result.is_valid}
-- TR3 Compliant: {validation_result.tr3_compliance}
-- Segments Validated: {validation_result.segments_validated}
-- Validation Time: {validation_result.validation_time:.3f}s
+- Valid: {is_valid}
+- TR3 Compliant: {tr3_compliance}
+- Segments Validated: {segments_validated}
+- Validation Time: {validation_time:.3f}s
 
 """
     
-    if validation_result.issues:
-        report += f"ISSUES FOUND ({len(validation_result.issues)}):\n"
-        for i, issue in enumerate(validation_result.issues, 1):
-            report += f"{i}. [{issue.level}] {issue.message}\n"
-            if issue.segment:
-                report += f"   Segment: {issue.segment}\n"
-            if issue.suggested_fix:
-                report += f"   Fix: {issue.suggested_fix}\n"
+    if issues:
+        report += f"ISSUES FOUND ({len(issues)}):\n"
+        for i, issue in enumerate(issues, 1):
+            # Handle both dict and object access for issues
+            if isinstance(issue, dict):
+                level = issue.get('level', 'unknown')
+                message = issue.get('message', 'Unknown issue')
+                segment = issue.get('segment')
+                suggested_fix = issue.get('suggested_fix')
+            else:
+                level = getattr(issue, 'level', 'unknown')
+                message = getattr(issue, 'message', 'Unknown issue')
+                segment = getattr(issue, 'segment', None)
+                suggested_fix = getattr(issue, 'suggested_fix', None)
+                
+            report += f"{i}. [{level}] {message}\n"
+            if segment:
+                report += f"   Segment: {segment}\n"
+            if suggested_fix:
+                report += f"   Fix: {suggested_fix}\n"
             report += "\n"
     
-    if validation_result.suggested_improvements:
+    if suggested_improvements:
         report += "RECOMMENDATIONS:\n"
-        for i, suggestion in enumerate(validation_result.suggested_improvements, 1):
+        for i, suggestion in enumerate(suggested_improvements, 1):
             report += f"{i}. {suggestion}\n"
     
     return report
@@ -2391,23 +2420,36 @@ def create_validation_charts(validation_result, job_id):
 def create_processing_summary_chart(result, filename):
     """Create a processing summary chart."""
     
-    # Extract processing metrics
-    validation_result = result.get('validation_result')
-    ai_analysis = result.get('ai_analysis')
-    fhir_mapping = result.get('fhir_mapping')
+    # Handle both dict and object access patterns
+    if isinstance(result, dict):
+        validation_result = result.get('validation_result')
+        ai_analysis = result.get('ai_analysis')
+        fhir_mapping = result.get('fhir_mapping')
+        parsed_edi = result.get('parsed_edi')
+    else:
+        validation_result = getattr(result, 'validation_result', None)
+        ai_analysis = getattr(result, 'ai_analysis', None)
+        fhir_mapping = getattr(result, 'fhir_mapping', None)
+        parsed_edi = getattr(result, 'parsed_edi', None)
     
     # Create processing status data
     processing_steps = []
     
     # EDI Parsing
-    if result.get('parsed_edi'):
+    if parsed_edi:
         processing_steps.append(('EDI Parsing', 'Success', '#28a745'))
     else:
         processing_steps.append(('EDI Parsing', 'Failed', '#dc3545'))
     
     # Validation
     if validation_result:
-        if validation_result.get('is_valid', False):
+        # Handle both dict and object access for validation_result
+        if isinstance(validation_result, dict):
+            is_valid = validation_result.get('is_valid', False)
+        else:
+            is_valid = getattr(validation_result, 'is_valid', False)
+            
+        if is_valid:
             processing_steps.append(('Validation', 'Success', '#28a745'))
         else:
             processing_steps.append(('Validation', 'Issues Found', '#ffc107'))
@@ -2416,7 +2458,12 @@ def create_processing_summary_chart(result, filename):
     
     # AI Analysis
     if ai_analysis:
-        confidence = ai_analysis.get('confidence_score', 0)
+        # Handle both dict and object access for ai_analysis
+        if isinstance(ai_analysis, dict):
+            confidence = ai_analysis.get('confidence_score', 0)
+        else:
+            confidence = getattr(ai_analysis, 'confidence_score', 0)
+            
         if confidence >= 0.8:
             processing_steps.append(('AI Analysis', 'High Confidence', '#28a745'))
         elif confidence >= 0.6:
