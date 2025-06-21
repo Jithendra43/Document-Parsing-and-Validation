@@ -489,13 +489,31 @@ def display_processing_results(result, filename):
         status = status_obj.value if hasattr(status_obj, 'value') else str(status_obj)
         job_details = result
     
-    # Status display
+    # Status display - FIXED to properly handle failed jobs
     if status == "completed":
-        st.success(f"Successfully processed {filename}")
+        # Check if job actually succeeded by looking at validation results
+        has_critical_errors = False
+        if hasattr(result, 'validation_result') and result.validation_result:
+            validation_result = result.validation_result
+            if hasattr(validation_result, 'issues'):
+                critical_issues = [i for i in validation_result.issues if hasattr(i, 'level') and str(i.level).upper() == 'CRITICAL']
+                has_critical_errors = len(critical_issues) > 0
+            # Also check is_valid flag
+            if hasattr(validation_result, 'is_valid') and not validation_result.is_valid:
+                has_critical_errors = True
+        
+        if has_critical_errors:
+            st.error(f"❌ PROCESSING FAILED: {filename} - Critical validation errors found")
+        else:
+            st.success(f"✅ Successfully processed {filename}")
     elif status == "failed":
-        st.error(f"Processing failed for {filename}")
+        st.error(f"❌ PROCESSING FAILED: {filename}")
+    elif status == "processing":
+        st.info(f"🔄 Processing {filename}...")
+    elif status == "pending":
+        st.info(f"⏳ Queued for processing: {filename}")
     else:
-        st.info(f"Processing {status} for {filename}")
+        st.warning(f"⚠️ Unknown status '{status}' for {filename}")
     
     # Get detailed job information if not already available
     if not job_details and job_id:
@@ -679,16 +697,22 @@ def display_validation_section(validation_result, job_id):
             'issues': getattr(validation_result, 'issues', [])
         }
     
-    # Metrics row
+    # Metrics row - FIXED to show proper failure status
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         is_valid = val_data.get("is_valid", False)
-        st.metric("Valid", "YES" if is_valid else "NO")
+        if is_valid:
+            st.metric("Valid", "✅ YES", delta=None)
+        else:
+            st.metric("Valid", "❌ NO", delta=None)
     
     with col2:
         tr3_compliance = val_data.get("tr3_compliance", False)
-        st.metric("TR3 Compliant", "YES" if tr3_compliance else "NO")
+        if tr3_compliance:
+            st.metric("TR3 Compliant", "✅ YES", delta=None)
+        else:
+            st.metric("TR3 Compliant", "❌ NO", delta=None)
     
     with col3:
         segments_validated = val_data.get("segments_validated", 0)
@@ -698,8 +722,23 @@ def display_validation_section(validation_result, job_id):
         validation_time = val_data.get("validation_time", 0)
         st.metric("Time", f"{validation_time:.3f}s")
     
-    # Issues table
+    # Show overall validation status clearly
     issues = val_data.get("issues", [])
+    critical_issues = [i for i in issues if isinstance(i, dict) and i.get('level', '').upper() == 'CRITICAL']
+    error_issues = [i for i in issues if isinstance(i, dict) and i.get('level', '').upper() == 'ERROR']
+    
+    if not is_valid or not tr3_compliance or critical_issues:
+        st.error("🚫 VALIDATION FAILED - Document has critical issues that prevent processing")
+        if critical_issues:
+            st.error(f"Found {len(critical_issues)} critical issue(s) that block TR3 compliance")
+        if error_issues:
+            st.warning(f"Found {len(error_issues)} error(s) that affect document quality")
+    elif error_issues:
+        st.warning("⚠️ VALIDATION PASSED WITH WARNINGS - Document has minor issues")
+    else:
+        st.success("✅ VALIDATION PASSED - Document is fully compliant")
+    
+    # Issues table
     if issues:
         st.subheader(f"Validation Issues ({len(issues)} found)")
         
@@ -745,42 +784,32 @@ def display_validation_section(validation_result, job_id):
         ]
         
         if not filtered_df.empty:
-            # Display formatted table
-            display_df = filtered_df[required_columns].copy()
-            display_df.columns = ['Severity', 'Code', 'Message', 'Segment', 'Line #', 'Suggested Fix']
-            
-            st.dataframe(
-                display_df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Severity": st.column_config.TextColumn(width="small"),
-                    "Code": st.column_config.TextColumn(width="small"),
-                    "Message": st.column_config.TextColumn(width="large"),
-                    "Segment": st.column_config.TextColumn(width="small"),
-                    "Line #": st.column_config.TextColumn(width="small"),
-                    "Suggested Fix": st.column_config.TextColumn(width="large")
-                }
-            )
-            
-            # Issue summary chart
-            if len(filtered_df) > 0:
-                level_counts = filtered_df['level'].value_counts()
+            # Display issues with proper styling
+            for idx, row in filtered_df.iterrows():
+                level = row['level'].upper()
+                message = row['message']
+                segment = row['segment']
+                line_num = row['line_number']
+                suggested_fix = row['suggested_fix']
                 
-                fig = px.bar(
-                    x=level_counts.index,
-                    y=level_counts.values,
-                    title="Issues by Severity Level",
-                    color=level_counts.index,
-                    color_discrete_map={
-                        'critical': '#ff4444',
-                        'error': '#ff8800',
-                        'warning': '#ffcc00', 
-                        'info': '#4488ff'
-                    }
-                )
-                fig.update_layout(showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
+                if level == 'CRITICAL':
+                    st.error(f"🚨 **CRITICAL:** {message}")
+                elif level == 'ERROR':
+                    st.error(f"❌ **ERROR:** {message}")
+                elif level == 'WARNING':
+                    st.warning(f"⚠️ **WARNING:** {message}")
+                else:
+                    st.info(f"ℹ️ **{level}:** {message}")
+                
+                # Show additional details
+                if segment and segment != 'N/A':
+                    st.caption(f"Segment: {segment}")
+                if line_num and line_num != 'N/A':
+                    st.caption(f"Line: {line_num}")
+                if suggested_fix and suggested_fix != 'N/A':
+                    st.caption(f"Suggested Fix: {suggested_fix}")
+                
+                st.divider()
         else:
             st.info("No issues match the selected filters.")
     else:
@@ -1262,21 +1291,39 @@ def display_enhanced_validation_results(result, options):
         st.error("No validation results to display")
         return
     
-    # Main validation status
+    # Main validation status - FIXED to properly handle failures
     is_valid = result.get("is_valid", False)
-    if is_valid:
-        st.success("VALIDATION PASSED - Document is valid and compliant")
+    tr3_compliance = result.get("tr3_compliance", False)
+    issues = result.get("issues", [])
+    
+    # Count critical and error issues
+    critical_issues = [i for i in issues if i.get("level", "").upper() == "CRITICAL"]
+    error_issues = [i for i in issues if i.get("level", "").upper() == "ERROR"]
+    
+    if not is_valid or not tr3_compliance or critical_issues:
+        st.error("🚫 VALIDATION FAILED - Document has critical issues requiring attention")
+        if critical_issues:
+            st.error(f"Found {len(critical_issues)} critical issue(s) that block TR3 compliance")
+        if error_issues:
+            st.warning(f"Found {len(error_issues)} error(s) that affect document quality")
+    elif error_issues:
+        st.warning("⚠️ VALIDATION PASSED WITH WARNINGS - Document has minor issues")
     else:
-        st.error("VALIDATION FAILED - Document has issues requiring attention")
+        st.success("✅ VALIDATION PASSED - Document is valid and compliant")
     
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Document Status", "VALID" if is_valid else "INVALID")
+        if is_valid:
+            st.metric("Document Status", "✅ VALID")
+        else:
+            st.metric("Document Status", "❌ INVALID")
     with col2:
-        tr3_compliance = result.get("tr3_compliance", False)
-        st.metric("TR3 Compliance", "PASS" if tr3_compliance else "FAIL")
+        if tr3_compliance:
+            st.metric("TR3 Compliance", "✅ PASS")
+        else:
+            st.metric("TR3 Compliance", "❌ FAIL")
     with col3:
         segments = result.get("segments_validated", 0)
         st.metric("Segments Validated", segments)
@@ -1285,7 +1332,6 @@ def display_enhanced_validation_results(result, options):
         st.metric("Validation Time", f"{time_taken:.3f}s")
     
     # Validation issues
-    issues = result.get("issues", [])
     if issues:
         st.subheader(f"Validation Issues ({len(issues)})")
         
@@ -1304,13 +1350,13 @@ def display_enhanced_validation_results(result, options):
             message = issue.get("message", "Unknown issue")
             
             if level == "CRITICAL":
-                st.error(f"{i}. **CRITICAL:** {message}")
+                st.error(f"🚨 **CRITICAL:** {message}")
             elif level == "ERROR":
-                st.error(f"{i}. **ERROR:** {message}")
+                st.error(f"❌ **ERROR:** {message}")
             elif level == "WARNING":
-                st.warning(f"{i}. **WARNING:** {message}")
+                st.warning(f"⚠️ **WARNING:** {message}")
             else:
-                st.info(f"{i}. **{level}:** {message}")
+                st.info(f"ℹ️ **{level}:** {message}")
             
             # Show additional details
             if issue.get("segment"):
@@ -1369,7 +1415,7 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 SUMMARY:
 - Status: {'VALID' if is_valid else 'INVALID'}
-- TR3 Compliant: {'YES' if result.get('tr3_compliance', False) else 'NO'}
+- TR3 Compliant: {'YES' if tr3_compliance else 'NO'}
 - Segments: {result.get('segments_validated', 0)}
 - Issues: {len(issues)}
 

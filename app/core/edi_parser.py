@@ -809,11 +809,12 @@ class ProductionTR3Validator:
             business_issues = self._validate_business_rules(parsed_edi)
             issues.extend(business_issues)
             
-            # Strict compliance assessment
+            # Strict compliance assessment - ZERO TOLERANCE FOR ERRORS
             critical_issues = [i for i in issues if i.level == ValidationLevel.CRITICAL]
             error_issues = [i for i in issues if i.level == ValidationLevel.ERROR]
             
-            # Production rule: ANY critical or error issue fails TR3 compliance
+            # PRODUCTION RULE: ANY critical or error issue fails TR3 compliance
+            # Zero tolerance for structural problems
             is_valid = len(critical_issues) == 0 and len(error_issues) == 0
             tr3_compliant = is_valid  # Strict: must be error-free for TR3 compliance
             
@@ -883,7 +884,7 @@ class ProductionTR3Validator:
                     suggested_fix=f"Add {seg_id} segment in proper trailer position"
                 ))
         
-        # Validate ISA segment elements
+        # Validate ISA segment elements - CRITICAL for TR3 compliance
         isa_segments = [s for s in segments if s.segment_id == 'ISA']
         if isa_segments:
             isa_seg = isa_segments[0]
@@ -891,10 +892,19 @@ class ProductionTR3Validator:
                 issues.append(ValidationIssue(
                     level=ValidationLevel.CRITICAL,
                     code="TR3_ISA_INCOMPLETE",
-                    message=f"ISA segment has {len(isa_seg.elements)} elements, requires 16",
+                    message=f"CRITICAL: ISA segment has {len(isa_seg.elements)} elements, requires exactly 16 for X12 compliance",
                     segment='ISA',
                     line_number=isa_seg.position,
-                    suggested_fix="Complete all 16 ISA elements per X12 standard"
+                    suggested_fix="Complete all 16 ISA elements per X12 standard - this is a blocking error"
+                ))
+            elif len(isa_seg.elements) > 16:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code="TR3_ISA_TOO_MANY",
+                    message=f"CRITICAL: ISA segment has {len(isa_seg.elements)} elements, maximum 16 allowed",
+                    segment='ISA',
+                    line_number=isa_seg.position,
+                    suggested_fix="Remove excess ISA elements - must have exactly 16"
                 ))
             
             # Validate ISA version
@@ -902,13 +912,20 @@ class ProductionTR3Validator:
                 version = isa_seg.elements[11]
                 if version not in ['00501', '00401']:
                     issues.append(ValidationIssue(
-                        level=ValidationLevel.ERROR,
+                        level=ValidationLevel.CRITICAL,
                         code="TR3_ISA_VERSION",
-                        message=f"ISA version {version} may not be TR3 compliant",
+                        message=f"CRITICAL: ISA version {version} is not TR3 compliant",
                         segment='ISA',
                         line_number=isa_seg.position,
                         suggested_fix="Use ISA version 00501 for TR3 005010X279A1 compliance"
                     ))
+        else:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.CRITICAL,
+                code="TR3_ISA_MISSING",
+                message="CRITICAL: Missing ISA (Interchange Control Header) segment",
+                suggested_fix="Add ISA segment as first segment in EDI document"
+            ))
         
         return issues
     
@@ -1000,16 +1017,16 @@ class ProductionTR3Validator:
                 ))
                 continue
             
-            # Validate level code (HL03)
+            # Validate level code (HL03) - CRITICAL for TR3 compliance
             level_code = hl_seg.elements[2]
             if level_code not in self.valid_hl_codes:
                 issues.append(ValidationIssue(
-                    level=ValidationLevel.ERROR,
+                    level=ValidationLevel.CRITICAL,
                     code="TR3_HL_INVALID_CODE",
-                    message=f"Invalid HL level code '{level_code}' at position {hl_seg.position}",
+                    message=f"CRITICAL: Invalid HL level code '{level_code}' at position {hl_seg.position} - TR3 compliance failure",
                     segment='HL',
                     line_number=hl_seg.position,
-                    suggested_fix=f"Use valid TR3 level codes: {', '.join(self.valid_hl_codes.keys())}"
+                    suggested_fix=f"Use valid TR3 level codes: {', '.join(self.valid_hl_codes.keys())} - this is a blocking error"
                 ))
         
         # Validate required hierarchy levels for 278
