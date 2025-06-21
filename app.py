@@ -373,19 +373,13 @@ def process_with_embedded_service_sync(content, filename, validate_only, enable_
         # Process content
         job = loop.run_until_complete(processor.process_content(content, upload_request))
         
-        # Convert job to API-compatible format
-        result = {
-            "job_id": job.job_id,
-            "status": job.status.value,
-            "message": "Processing completed" if job.status.value == "completed" else "Processing failed"
-        }
-        
         # Store job in session state for later retrieval
         if 'jobs' not in st.session_state:
             st.session_state['jobs'] = {}
         st.session_state['jobs'][job.job_id] = job
         
-        return result
+        # Return the actual job object, not a dict
+        return job
         
     except Exception as e:
         st.error(f"Embedded processing failed: {str(e)}")
@@ -460,19 +454,13 @@ async def process_with_embedded_service(content, filename, validate_only, enable
         # Process content
         job = await processing_service.process_content(content, upload_request)
         
-        # Convert job to API-compatible format
-        result = {
-            "job_id": job.job_id,
-            "status": job.status.value,
-            "message": "Processing completed" if job.status.value == "completed" else "Processing failed"
-        }
-        
         # Store job in session state for later retrieval
         if 'jobs' not in st.session_state:
             st.session_state['jobs'] = {}
         st.session_state['jobs'][job.job_id] = job
         
-        return result
+        # Return the actual job object, not a dict
+        return job
         
     except Exception as e:
         st.error(f"Embedded processing failed: {str(e)}")
@@ -486,7 +474,7 @@ def display_processing_results(result, filename):
     if hasattr(result, 'model_dump') or hasattr(result, 'dict'):
         # Pydantic object
         job_id = result.job_id
-        status = result.status
+        status = result.status.value if hasattr(result.status, 'value') else str(result.status)
         job_details = result
     elif isinstance(result, dict):
         # Dictionary
@@ -496,7 +484,8 @@ def display_processing_results(result, filename):
     else:
         # Object with attributes
         job_id = getattr(result, 'job_id', None)
-        status = getattr(result, 'status', 'unknown')
+        status_obj = getattr(result, 'status', 'unknown')
+        status = status_obj.value if hasattr(status_obj, 'value') else str(status_obj)
         job_details = result
     
     # Status display
@@ -520,6 +509,10 @@ def display_processing_results(result, filename):
                     job_details = job_response.json()
             except Exception as e:
                 st.warning(f"Could not fetch job details: {e}")
+    
+    # If we still don't have job_details but we have a result that looks like a job, use it
+    if not job_details and hasattr(result, 'validation_result'):
+        job_details = result
     
     if not job_details:
         st.warning("No detailed results available")
@@ -606,27 +599,27 @@ def display_processing_results(result, filename):
     
     with result_cols[0]:
         if validation_result:
-            st.success("✓ Validation Results")
+            st.success("PASS Validation Results")
         else:
-            st.error("✗ No Validation Results")
+            st.error("FAIL No Validation Results")
     
     with result_cols[1]:
         if ai_analysis:
-            st.success("✓ AI Analysis")
+            st.success("PASS AI Analysis")
         else:
-            st.warning("⚠ No AI Analysis")
+            st.warning("WARN No AI Analysis")
     
     with result_cols[2]:
         if fhir_mapping:
-            st.success("✓ FHIR Mapping")
+            st.success("PASS FHIR Mapping")
         else:
-            st.error("✗ FHIR Mapping Failed")
+            st.error("FAIL FHIR Mapping Failed")
     
     with result_cols[3]:
         if parsed_edi:
-            st.success("✓ EDI Parsing")
+            st.success("PASS EDI Parsing")
         else:
-            st.error("✗ EDI Parsing Failed")
+            st.error("FAIL EDI Parsing Failed")
     
     # Validation Results Section
     if validation_result:
