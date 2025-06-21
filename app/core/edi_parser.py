@@ -674,12 +674,16 @@ class EDI278Validator:
             tr3_issues = self._validate_tr3_compliance(parsed_edi)
             issues.extend(tr3_issues)
             
-            # Calculate overall validity
+            # Calculate overall validity - only CRITICAL issues prevent processing
             critical_issues = [issue for issue in issues if issue.level == ValidationLevel.CRITICAL]
             error_issues = [issue for issue in issues if issue.level == ValidationLevel.ERROR]
             
-            is_valid = len(critical_issues) == 0 and len(error_issues) == 0
-            tr3_compliance = len(tr3_issues) == 0
+            # Document is valid if no critical issues and major structure is intact
+            is_valid = len(critical_issues) == 0
+            
+            # TR3 compliance is stricter - no errors or warnings in TR3 validation
+            tr3_error_issues = [issue for issue in tr3_issues if issue.level in [ValidationLevel.CRITICAL, ValidationLevel.ERROR]]
+            tr3_compliance = len(tr3_error_issues) == 0
             
             # Generate improvement suggestions
             suggestions = self._generate_suggestions(issues)
@@ -737,7 +741,7 @@ class EDI278Validator:
             
             if not has_gs:
                 issues.append(ValidationIssue(
-                    level=ValidationLevel.ERROR,
+                    level=ValidationLevel.WARNING,
                     code="STR002",
                     message="Missing GS (Functional Group Header) segment",
                     suggested_fix="Add GS segment after ISA segment"
@@ -764,7 +768,7 @@ class EDI278Validator:
             has_bht = any(seg.segment_id == 'BHT' for seg in segments)
             if not has_bht:
                 issues.append(ValidationIssue(
-                    level=ValidationLevel.ERROR,
+                    level=ValidationLevel.WARNING,
                     code="STR005",
                     message="Missing BHT (Beginning of Hierarchical Transaction) segment",
                     suggested_fix="Add BHT segment after ST segment for X12 278"
@@ -811,7 +815,7 @@ class EDI278Validator:
                 min_required = min_elements.get(segment.segment_id, 0)
                 if min_required > 0 and len(segment.elements) < min_required:
                     issues.append(ValidationIssue(
-                        level=ValidationLevel.ERROR,
+                        level=ValidationLevel.WARNING,
                         code="SEG002",
                         message=f"Segment {segment.segment_id} has {len(segment.elements)} elements, minimum {min_required} required",
                         segment=segment.segment_id,
@@ -879,7 +883,8 @@ class EDI278Validator:
             
             # Check for required NM1 segments with proper qualifiers
             nm1_segments = [seg for seg in segments if seg.segment_id == 'NM1']
-            required_qualifiers = ['PR', 'IL', '82']  # Payer, Insured, Rendering Provider
+            required_qualifiers = ['PR', 'IL']  # Payer, Insured (minimum required)
+            recommended_qualifiers = ['82', '1P']  # Rendering Provider, Physician (recommended)
             
             found_qualifiers = []
             for nm1_seg in nm1_segments:
@@ -887,13 +892,24 @@ class EDI278Validator:
                     qualifier = nm1_seg.elements[0]
                     found_qualifiers.append(qualifier)
             
+            # Check required qualifiers (errors)
             for req_qual in required_qualifiers:
                 if req_qual not in found_qualifiers:
                     issues.append(ValidationIssue(
-                        level=ValidationLevel.WARNING,
+                        level=ValidationLevel.ERROR,
                         code="TR3004",
-                        message=f"Missing NM1 segment with qualifier '{req_qual}'",
-                        suggested_fix=f"Add NM1 segment with qualifier '{req_qual}' for complete party identification"
+                        message=f"Missing required NM1 segment with qualifier '{req_qual}'",
+                        suggested_fix=f"Add NM1 segment with qualifier '{req_qual}' for party identification"
+                    ))
+            
+            # Check recommended qualifiers (warnings)
+            for rec_qual in recommended_qualifiers:
+                if rec_qual not in found_qualifiers:
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.INFO,
+                        code="TR3004B",
+                        message=f"Consider adding NM1 segment with qualifier '{rec_qual}' for complete identification",
+                        suggested_fix=f"Add NM1 segment with qualifier '{rec_qual}' for enhanced compliance"
                     ))
             
             # Check version compliance
