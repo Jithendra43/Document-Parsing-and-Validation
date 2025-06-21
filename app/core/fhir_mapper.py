@@ -227,31 +227,34 @@ class X12To278FHIRMapper:
                 logger.warning("No insurance information found, using default")
                 insurance_info = {'elements': ['NM1', 'PR', '2', 'DEFAULT_INSURANCE']}
             
-            # Create insurance organization reference using the actual organization ID
-            insurance_org_ref = Reference(
-                reference=f"Organization/{organization.id}",
-                display=organization.name or "Insurance Company"
-            )
-            
-            coverage = Coverage(
-                id=str(uuid.uuid4()),
-                meta=Meta(
-                    profile=["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-coverage"]
-                ),
-                status="active",
-                kind="insurance",  # Required field
-                beneficiary=Reference(reference=f"Patient/{patient.id}"),
-                insurer=insurance_org_ref,  # Ensure single Reference object
-                type=CodeableConcept(
-                    coding=[
-                        Coding(
-                            system="http://terminology.hl7.org/CodeSystem/v3-ActCode",
-                            code="EHCPOL",
-                            display="Extended healthcare"
-                        )
+            # Create Coverage resource step by step to avoid validation issues
+            coverage_data = {
+                "id": str(uuid.uuid4()),
+                "meta": {
+                    "profile": ["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-coverage"]
+                },
+                "status": "active",
+                "kind": "insurance",
+                "beneficiary": {
+                    "reference": f"Patient/{patient.id}"
+                },
+                "insurer": {
+                    "reference": f"Organization/{organization.id}",
+                    "display": organization.name or "Insurance Company"
+                },
+                "type": {
+                    "coding": [
+                        {
+                            "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                            "code": "EHCPOL",
+                            "display": "Extended healthcare"
+                        }
                     ]
-                )
-            )
+                }
+            }
+            
+            # Create Coverage from dict to avoid validation issues
+            coverage = Coverage(**coverage_data)
             
             logger.info("Successfully mapped Coverage resource")
             return coverage
