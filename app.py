@@ -23,6 +23,7 @@ if './app' not in sys.path:
 try:
     from app.core.edi_parser import EDI278Parser, EDI278Validator
     from app.core.fhir_mapper import X12To278FHIRMapper, ProductionFHIRMapper
+    from app.core.models import EDIFileUpload, ProcessingJob, ValidationResult, AIAnalysis, FHIRMapping
     from app.ai.analyzer import EDIAIAnalyzer
     from app.services.processor import EDIProcessingService, ProductionEDIProcessingService
     from app.config import settings
@@ -30,6 +31,12 @@ try:
 except ImportError as e:
     HAS_LOCAL_PROCESSING = False
     print(f"Local processing not available: {e}")
+    
+    # Create fallback classes to prevent NameError
+    class EDIFileUpload:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
 
 # Page config
 st.set_page_config(
@@ -569,6 +576,26 @@ def display_processing_results(result, filename):
         else:
             st.error(f"Processing errors: {error_msg}")
     
+    # Extract data from job_details FIRST (handle both dict and object)
+    if hasattr(job_details, 'model_dump') or hasattr(job_details, 'dict'):
+        # Pydantic object
+        validation_result = getattr(job_details, 'validation_result', None)
+        ai_analysis = getattr(job_details, 'ai_analysis', None)
+        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+        parsed_edi = getattr(job_details, 'parsed_edi', None)
+    elif isinstance(job_details, dict):
+        # Dictionary
+        validation_result = job_details.get("validation_result")
+        ai_analysis = job_details.get("ai_analysis")
+        fhir_mapping = job_details.get("fhir_mapping")
+        parsed_edi = job_details.get("parsed_edi")
+    else:
+        # Object with attributes
+        validation_result = getattr(job_details, 'validation_result', None)
+        ai_analysis = getattr(job_details, 'ai_analysis', None)
+        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
+        parsed_edi = getattr(job_details, 'parsed_edi', None)
+    
     # Show processing summary
     st.subheader("Processing Summary")
     
@@ -608,26 +635,6 @@ def display_processing_results(result, filename):
                 st.metric("File Size", "N/A")
         else:
             st.metric("File Size", "N/A")
-    
-    # Extract data from job_details (handle both dict and object)
-    if hasattr(job_details, 'model_dump') or hasattr(job_details, 'dict'):
-        # Pydantic object
-        validation_result = getattr(job_details, 'validation_result', None)
-        ai_analysis = getattr(job_details, 'ai_analysis', None)
-        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
-        parsed_edi = getattr(job_details, 'parsed_edi', None)
-    elif isinstance(job_details, dict):
-        # Dictionary
-        validation_result = job_details.get("validation_result")
-        ai_analysis = job_details.get("ai_analysis")
-        fhir_mapping = job_details.get("fhir_mapping")
-        parsed_edi = job_details.get("parsed_edi")
-    else:
-        # Object with attributes
-        validation_result = getattr(job_details, 'validation_result', None)
-        ai_analysis = getattr(job_details, 'ai_analysis', None)
-        fhir_mapping = getattr(job_details, 'fhir_mapping', None)
-        parsed_edi = getattr(job_details, 'parsed_edi', None)
     
     # Show what results are available
     st.subheader("Available Results")
