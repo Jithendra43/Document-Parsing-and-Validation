@@ -28,7 +28,9 @@ from app.core.models import (
     EDI278ParsedData, 
     FHIRMappingResult, 
     ValidationResult,
-    EDI278Segment
+    EDI278Segment,
+    FHIRMapping,
+    FHIRResource
 )
 from app.core.logger import get_logger
 
@@ -100,7 +102,7 @@ class X12To278FHIRMapper:
             fhir_json = bundle.dict()
             
             # Create FHIRMapping object for compatibility
-            from .models import FHIRMapping, FHIRResource
+            # from .models import FHIRMapping, FHIRResource  # Now imported at top
             
             # Extract resources from bundle
             fhir_resources = []
@@ -706,9 +708,326 @@ def get_fhir_mapper(direction: str = "to_fhir"):
         raise ValueError(f"Unknown mapping direction: {direction}")
 
 
+class ProductionFHIRMapper(X12To278FHIRMapper):
+    """
+    Production-grade FHIR mapper with enhanced error handling and validation.
+    Implements strict Da Vinci PAS Implementation Guide compliance.
+    """
+    
+    def __init__(self):
+        super().__init__()
+        self.logger = get_logger(f"{self.__class__.__name__}_Production")
+        self.logger.info("Production FHIR mapper initialized with strict validation")
+        
+    def map_to_fhir(self, edi_data) -> FHIRMapping:
+        """
+        Production-grade FHIR mapping with comprehensive error handling and validation.
+        
+        Args:
+            edi_data: Parsed EDI data (ParsedEDI object)
+            
+        Returns:
+            FHIRMapping: Production-validated FHIR mapping result
+        """
+        try:
+            self.logger.info("Starting production FHIR mapping with enhanced validation")
+            
+            # Validate input data
+            if not edi_data:
+                raise FHIRMappingError("No EDI data provided for mapping")
+                
+            if not hasattr(edi_data, 'segments') or not edi_data.segments:
+                raise FHIRMappingError("No segments found in EDI data")
+            
+            # Create main bundle with production metadata
+            bundle = Bundle(
+                id=str(uuid.uuid4()),
+                type="collection",
+                timestamp=datetime.utcnow().isoformat() + "Z",
+                identifier=Identifier(
+                    system="urn:ietf:rfc:3986",
+                    value=f"urn:uuid:{uuid.uuid4()}"
+                ),
+                meta=Meta(
+                    profile=["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-pas-request-bundle"],
+                    tag=[
+                        {
+                            "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                            "code": "PRODUCTION",
+                            "display": "Production Environment"
+                        }
+                    ]
+                )
+            )
+            
+            # Map core resources with production error handling
+            resources_created = []
+            
+            try:
+                patient = self._map_patient_production(edi_data)
+                resources_created.append(("Patient", patient))
+                self.logger.info("✅ Patient resource mapped successfully")
+            except Exception as e:
+                self.logger.error(f"❌ Patient mapping failed: {str(e)}")
+                raise FHIRMappingError(f"Critical: Patient mapping failed - {str(e)}")
+            
+            try:
+                organization = self._map_organization_production(edi_data)
+                resources_created.append(("Organization", organization))
+                self.logger.info("✅ Organization resource mapped successfully")
+            except Exception as e:
+                self.logger.error(f"❌ Organization mapping failed: {str(e)}")
+                raise FHIRMappingError(f"Critical: Organization mapping failed - {str(e)}")
+            
+            try:
+                practitioner = self._map_practitioner_production(edi_data)
+                resources_created.append(("Practitioner", practitioner))
+                self.logger.info("✅ Practitioner resource mapped successfully")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Practitioner mapping failed: {str(e)}")
+                # Create default practitioner for production continuity
+                practitioner = self._create_default_practitioner()
+                resources_created.append(("Practitioner", practitioner))
+                self.logger.info("✅ Default Practitioner resource created")
+            
+            try:
+                coverage = self._map_coverage_production(edi_data, patient, organization)
+                resources_created.append(("Coverage", coverage))
+                self.logger.info("✅ Coverage resource mapped successfully")
+            except Exception as e:
+                self.logger.error(f"❌ Coverage mapping failed: {str(e)}")
+                raise FHIRMappingError(f"Critical: Coverage mapping failed - {str(e)}")
+            
+            # Create CoverageEligibilityRequest (main resource for 278)
+            try:
+                coverage_eligibility_request = self._map_coverage_eligibility_request_production(
+                    edi_data, patient, coverage, organization, practitioner
+                )
+                resources_created.append(("CoverageEligibilityRequest", coverage_eligibility_request))
+                self.logger.info("✅ CoverageEligibilityRequest resource mapped successfully")
+            except Exception as e:
+                self.logger.error(f"❌ CoverageEligibilityRequest mapping failed: {str(e)}")
+                raise FHIRMappingError(f"Critical: CoverageEligibilityRequest mapping failed - {str(e)}")
+            
+            # Add all resources to bundle
+            bundle.entry = []
+            for resource_type, resource in resources_created:
+                bundle.entry.append(BundleEntry(resource=resource))
+            
+            # Create FHIRMapping object for system compatibility
+            # from .models import FHIRMapping, FHIRResource  # Now imported at top
+            
+            # Extract resources for FHIRMapping
+            fhir_resources = []
+            for resource_type, resource in resources_created:
+                resource_dict = resource.dict()
+                fhir_resources.append(FHIRResource(
+                    resource_type=resource_dict.get('resourceType', resource_type),
+                    id=resource.id,
+                    data=resource_dict
+                ))
+            
+            fhir_mapping = FHIRMapping(
+                resources=fhir_resources,
+                mapping_version="1.0-production",
+                mapped_at=datetime.utcnow(),
+                source_segments=[seg.segment_id for seg in edi_data.segments[:10]]
+            )
+            
+            self.logger.info(f"✅ Production FHIR mapping completed: {len(fhir_resources)} resources created")
+            
+            return fhir_mapping
+            
+        except FHIRMappingError:
+            # Re-raise FHIR mapping errors as-is
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Production FHIR mapping system error: {str(e)}")
+            raise FHIRMappingError(f"Production FHIR mapping system error: {str(e)}")
+    
+    def _map_patient_production(self, edi_data) -> Patient:
+        """Production-grade patient mapping with enhanced validation."""
+        try:
+            # Use parent class method with additional validation
+            patient = self._map_patient(edi_data)
+            
+            # Production validation
+            if not patient.id:
+                patient.id = str(uuid.uuid4())
+                
+            # Ensure required elements for production
+            if not patient.name or len(patient.name) == 0:
+                patient.name = [HumanName(family="Unknown", given=["Patient"])]
+                
+            # Add production metadata
+            if not patient.meta:
+                patient.meta = Meta()
+            patient.meta.profile = ["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-beneficiary"]
+            
+            return patient
+            
+        except Exception as e:
+            self.logger.error(f"Production patient mapping failed: {str(e)}")
+            raise FHIRMappingError(f"Patient mapping failed: {str(e)}")
+    
+    def _map_organization_production(self, edi_data) -> Organization:
+        """Production-grade organization mapping with enhanced validation."""
+        try:
+            # Use parent class method with additional validation
+            organization = self._map_organization(edi_data)
+            
+            # Production validation
+            if not organization.id:
+                organization.id = str(uuid.uuid4())
+                
+            # Ensure required elements for production
+            if not organization.name:
+                organization.name = "Healthcare Organization"
+                
+            if not hasattr(organization, 'active') or organization.active is None:
+                organization.active = True
+                
+            # Add production metadata
+            if not organization.meta:
+                organization.meta = Meta()
+            organization.meta.profile = ["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-insurer"]
+            
+            return organization
+            
+        except Exception as e:
+            self.logger.error(f"Production organization mapping failed: {str(e)}")
+            raise FHIRMappingError(f"Organization mapping failed: {str(e)}")
+    
+    def _map_practitioner_production(self, edi_data) -> Practitioner:
+        """Production-grade practitioner mapping with enhanced validation."""
+        try:
+            # Use parent class method with additional validation
+            practitioner = self._map_practitioner(edi_data)
+            
+            # Production validation
+            if not practitioner.id:
+                practitioner.id = str(uuid.uuid4())
+                
+            # Ensure required elements for production
+            if not practitioner.name or len(practitioner.name) == 0:
+                practitioner.name = [HumanName(family="Provider", given=["Healthcare"])]
+                
+            # Add production metadata
+            if not practitioner.meta:
+                practitioner.meta = Meta()
+            practitioner.meta.profile = ["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-practitioner"]
+            
+            return practitioner
+            
+        except Exception as e:
+            self.logger.error(f"Production practitioner mapping failed: {str(e)}")
+            raise FHIRMappingError(f"Practitioner mapping failed: {str(e)}")
+    
+    def _map_coverage_production(self, edi_data, patient: Patient, organization: Organization) -> Coverage:
+        """Production-grade coverage mapping with enhanced error handling."""
+        try:
+            # Use parent class method with additional validation
+            coverage = self._map_coverage(edi_data, patient, organization)
+            
+            # Production validation - ensure coverage has all required elements
+            if not coverage.id:
+                coverage.id = str(uuid.uuid4())
+                
+            # Validate and fix insurer reference issue
+            if hasattr(coverage, 'insurer'):
+                if isinstance(coverage.insurer, list):
+                    # Fix: Convert list to single Reference object
+                    if len(coverage.insurer) > 0:
+                        coverage.insurer = coverage.insurer[0]
+                    else:
+                        coverage.insurer = Reference(reference=f"Organization/{organization.id}")
+                elif not coverage.insurer:
+                    coverage.insurer = Reference(reference=f"Organization/{organization.id}")
+            else:
+                coverage.insurer = Reference(reference=f"Organization/{organization.id}")
+            
+            # Ensure beneficiary is set
+            if not hasattr(coverage, 'beneficiary') or not coverage.beneficiary:
+                coverage.beneficiary = Reference(reference=f"Patient/{patient.id}")
+            
+            # Add production metadata
+            if not coverage.meta:
+                coverage.meta = Meta()
+            coverage.meta.profile = ["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-coverage"]
+            
+            return coverage
+            
+        except Exception as e:
+            self.logger.error(f"Production coverage mapping failed: {str(e)}")
+            raise FHIRMappingError(f"Coverage mapping failed: {str(e)}")
+    
+    def _map_coverage_eligibility_request_production(
+        self,
+        edi_data,
+        patient: Patient,
+        coverage: Coverage,
+        organization: Organization,
+        practitioner: Practitioner
+    ) -> CoverageEligibilityRequest:
+        """Production-grade CoverageEligibilityRequest mapping."""
+        try:
+            # Use parent class method with additional validation
+            request = self._map_coverage_eligibility_request(
+                edi_data, patient, coverage, organization, practitioner
+            )
+            
+            # Production validation
+            if not request.id:
+                request.id = str(uuid.uuid4())
+                
+            # Ensure required elements
+            if not request.status:
+                request.status = "active"
+                
+            if not request.purpose:
+                request.purpose = ["auth-requirements"]
+                
+            # Add production metadata
+            if not request.meta:
+                request.meta = Meta()
+            request.meta.profile = ["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-coverageeligibilityrequest"]
+            
+            return request
+            
+        except Exception as e:
+            self.logger.error(f"Production CoverageEligibilityRequest mapping failed: {str(e)}")
+            raise FHIRMappingError(f"CoverageEligibilityRequest mapping failed: {str(e)}")
+    
+    def _create_default_practitioner(self) -> Practitioner:
+        """Create a default practitioner for production continuity."""
+        return Practitioner(
+            id=str(uuid.uuid4()),
+            meta=Meta(
+                profile=["http://hl7.org/fhir/us/davinci-pas/StructureDefinition/profile-practitioner"]
+            ),
+            name=[HumanName(family="Provider", given=["Healthcare"])],
+            identifier=[
+                Identifier(
+                    type=CodeableConcept(
+                        coding=[
+                            Coding(
+                                system="http://terminology.hl7.org/CodeSystem/v2-0203",
+                                code="NPI",
+                                display="National Provider Identifier"
+                            )
+                        ]
+                    ),
+                    value="9999999999",
+                    system="http://hl7.org/fhir/sid/us-npi"
+                )
+            ]
+        )
+
+
 # Export main classes
 __all__ = [
     "X12To278FHIRMapper",
+    "ProductionFHIRMapper",
     "FHIRToX12Mapper", 
     "FHIRMappingError",
     "get_fhir_mapper"

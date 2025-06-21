@@ -22,9 +22,9 @@ if './app' not in sys.path:
 # Try to import local components for cloud-only mode
 try:
     from app.core.edi_parser import EDI278Parser, EDI278Validator
-    from app.core.fhir_mapper import X12To278FHIRMapper
+    from app.core.fhir_mapper import X12To278FHIRMapper, ProductionFHIRMapper
     from app.ai.analyzer import EDIAIAnalyzer
-    from app.services.processor import EDIProcessingService
+    from app.services.processor import EDIProcessingService, ProductionEDIProcessingService
     from app.config import settings
     HAS_LOCAL_PROCESSING = True
 except ImportError as e:
@@ -60,14 +60,15 @@ def safe_model_dump(obj):
     else:
         return obj
 
-# Initialize processing service for cloud mode
+# Initialize processing service for cloud mode - USE PRODUCTION SERVICE
 if IS_STREAMLIT_CLOUD and HAS_LOCAL_PROCESSING:
     try:
-        processing_service = EDIProcessingService()
+        processing_service = ProductionEDIProcessingService()  # Use production service
         st.session_state['processing_service'] = processing_service
+        print("✅ Production EDI Processing Service initialized")
     except Exception as e:
         processing_service = None
-        print(f"Could not initialize processing service: {e}")
+        print(f"Could not initialize production processing service: {e}")
 else:
     processing_service = None
 

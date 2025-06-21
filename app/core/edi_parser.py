@@ -300,31 +300,60 @@ class EDI278Parser:
         """Pre-process EDI content to handle common compatibility issues."""
         try:
             # Handle ISA version compatibility issues
-            lines = content.strip().split('\n')
-            processed_lines = []
+            processed_content = content.strip()
             
-            for line in lines:
-                line = line.strip()
-                if line.startswith('ISA*'):
-                    # Check and fix ISA version format
-                    parts = line.split('*')
-                    if len(parts) >= 12:
-                        # ISA12 is the version number - ensure it's in correct format
-                        version = parts[11]
-                        # Common version mappings for compatibility
-                        version_map = {
-                            '00501': '00401',  # Map 5010 to 4010 for pyx12 compatibility
-                            '501': '00401',
-                            '5010': '00401'
-                        }
-                        if version in version_map:
-                            parts[11] = version_map[version]
-                            line = '*'.join(parts)
-                            logger.debug(f"Mapped ISA version {version} to {version_map[version]} for pyx12 compatibility")
+            # Enhanced ISA version preprocessing with multiple patterns
+            isa_patterns = [
+                # Pattern: ISA*...*...*U*00501*
+                (r'(ISA\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*)00501(\*[^*]*\*[^*]*\*[^~]*~)', r'\g<1>00401\g<2>'),
+                # Pattern: ISA*...*U*501*
+                (r'(ISA\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*)501(\*[^*]*\*[^*]*\*[^~]*~)', r'\g<1>00401\g<2>'),
+                # Pattern: ISA*...*U*5010*
+                (r'(ISA\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*[^*]*\*)5010(\*[^*]*\*[^*]*\*[^~]*~)', r'\g<1>00401\g<2>'),
+            ]
+            
+            original_content = processed_content
+            for pattern, replacement in isa_patterns:
+                new_content = re.sub(pattern, replacement, processed_content)
+                if new_content != processed_content:
+                    logger.info(f"ISA version compatibility fix applied: {pattern}")
+                    processed_content = new_content
+                    break
+            
+            # If regex patterns didn't work, try manual parsing
+            if processed_content == original_content and 'ISA*' in processed_content:
+                lines = processed_content.split('\n')
+                processed_lines = []
                 
-                processed_lines.append(line)
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('ISA*'):
+                        # Split by * and fix ISA version (position 12, index 11)
+                        parts = line.split('*')
+                        if len(parts) >= 12:
+                            version = parts[11]
+                            # Enhanced version mappings for compatibility
+                            version_map = {
+                                '00501': '00401',  # Map 5010 to 4010 for pyx12 compatibility
+                                '501': '00401',
+                                '5010': '00401',
+                                '00500': '00401',
+                                '500': '00401'
+                            }
+                            if version in version_map:
+                                parts[11] = version_map[version]
+                                line = '*'.join(parts)
+                                logger.info(f"Manual ISA version mapping: {version} → {version_map[version]}")
+                    
+                    processed_lines.append(line)
+                
+                processed_content = '\n'.join(processed_lines)
             
-            return '\n'.join(processed_lines)
+            # Additional pyx12 compatibility fixes
+            if processed_content != original_content:
+                logger.info("✅ ISA version preprocessing completed for pyx12 compatibility")
+            
+            return processed_content
             
         except Exception as e:
             logger.warning(f"EDI preprocessing failed: {e}, using original content")
@@ -496,7 +525,11 @@ class EDI278Parser:
                 if '*' in segment_raw:
                     parts = segment_raw.split('*')
                     tag = parts[0].strip()
-                    elements = [elem.strip() for elem in parts[1:] if elem.strip()]
+                    # For ISA and HL segments, preserve all elements including empty ones
+                    if tag in ['ISA', 'HL']:
+                        elements = [elem for elem in parts[1:]]  # Keep all elements for ISA and HL
+                    else:
+                        elements = [elem.strip() for elem in parts[1:] if elem.strip()]
                     
                     # Validate segment tag (should be 2-3 letters/numbers)
                     if len(tag) >= 2 and tag.isalnum():

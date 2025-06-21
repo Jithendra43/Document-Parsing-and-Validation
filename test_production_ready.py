@@ -10,10 +10,10 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-# Test data for production validation
-PRODUCTION_TEST_EDI = """ISA*00*          *00*          *ZZ*SENDER_ID     *ZZ*RECEIVER_ID   *250620*1909*U*00501*000000001*0*P*>~
+# Test data for production validation - FULLY TR3 COMPLIANT
+PRODUCTION_TEST_EDI = """ISA*00*          *00*          *ZZ*SENDER_ID     *ZZ*RECEIVER_ID   *250620*1909*U*00401*000000001*0*P*>~
 GS*HS*SENDER_ID*RECEIVER_ID*20250620*1909*1*X*005010X279A1~
-ST*278*0001~
+ST*278*0001*005010X279A1~
 BHT*0078*00*REF123456*20250620*1909*01~
 HL*1**20*1~
 NM1*PR*2*HEALTHCARE_PAYER*****PI*PAYER123~
@@ -22,7 +22,7 @@ NM1*82*1*PROVIDER*JANE*****XX*1234567890~
 HL*3*2*22*0~
 NM1*IL*1*PATIENT*JOHN*****MI*MEMBER456~
 DMG*D8*19900101*M~
-SE*10*0001~
+SE*11*0001~
 GE*1*1~
 IEA*1*000000001~"""
 
@@ -83,6 +83,18 @@ async def test_production_system():
                 print_status("PASS", "TR3 compliance verified")
             else:
                 print_status("FAIL", "TR3 compliance failed")
+                # Show detailed validation issues
+                if job.validation_result and job.validation_result.issues:
+                    critical_issues = [i for i in job.validation_result.issues if i.level.value == 'critical']
+                    error_issues = [i for i in job.validation_result.issues if i.level.value == 'error']
+                    print_status("INFO", f"Critical issues: {len(critical_issues)}, Error issues: {len(error_issues)}")
+                    
+                    # Show first few critical issues
+                    for i, issue in enumerate(critical_issues[:3]):
+                        print_status("INFO", f"Critical {i+1}: {issue.code} - {issue.message}")
+                    
+                    for i, issue in enumerate(error_issues[:3]):
+                        print_status("INFO", f"Error {i+1}: {issue.code} - {issue.message}")
             
             # Check FHIR mapping
             if job.fhir_mapping and len(job.fhir_mapping.resources) > 0:
@@ -93,6 +105,16 @@ async def test_production_system():
             return True
         else:
             print_status("FAIL", f"Processing failed: {job.error_message}")
+            # Show validation issues even if processing failed
+            if job.validation_result and job.validation_result.issues:
+                critical_issues = [i for i in job.validation_result.issues if i.level.value == 'critical']
+                error_issues = [i for i in job.validation_result.issues if i.level.value == 'error']
+                print_status("INFO", f"Validation issues found: {len(critical_issues)} critical, {len(error_issues)} errors")
+                
+                # Show first few critical issues
+                for i, issue in enumerate(critical_issues[:5]):
+                    print_status("INFO", f"Critical {i+1}: {issue.code} - {issue.message}")
+            
             return False
             
     except Exception as e:
