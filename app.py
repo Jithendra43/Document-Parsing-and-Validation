@@ -349,7 +349,7 @@ def process_with_embedded_service_sync(content, filename, validate_only, enable_
         from app.services.processor import EDIProcessingService
         
         # Create processing service
-        processor = EDIProcessingService()
+        processor = ProductionEDIProcessingService()
         
         # Create upload request
         upload_request = EDIFileUpload(

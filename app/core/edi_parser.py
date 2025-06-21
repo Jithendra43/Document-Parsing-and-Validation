@@ -676,338 +676,524 @@ class EDI278Parser:
             )
 
 
-class EDI278Validator:
-    """X12 278 specific validator with TR3 compliance checking."""
+class ProductionTR3Validator:
+    """
+    Production-grade TR3 compliance validator for X12 278 with strict industry standards.
+    Implements comprehensive TR3 implementation guide rules for healthcare prior authorization.
+    """
     
     def __init__(self):
-        """Initialize validator."""
-        logger.info("EDI278Validator initialized")
-    
-    def validate(self, parsed_edi: ParsedEDI) -> ValidationResult:
-        """
-        Comprehensive validation of X12 278 EDI document.
+        """Initialize with TR3 005010X279A1 rules."""
+        self.tr3_version = "005010X279A1"
+        self.required_segments = {
+            'ISA': {'min_elements': 16, 'required': True},
+            'GS': {'min_elements': 8, 'required': True},
+            'ST': {'min_elements': 2, 'required': True, 'transaction_type': '278'},
+            'BHT': {'min_elements': 6, 'required': True},
+            'HL': {'min_elements': 4, 'required': True},
+            'NM1': {'min_elements': 3, 'required': True},
+            'SE': {'min_elements': 2, 'required': True},
+            'GE': {'min_elements': 2, 'required': True},
+            'IEA': {'min_elements': 2, 'required': True}
+        }
         
-        Args:
-            parsed_edi: Parsed EDI structure
-            
-        Returns:
-            ValidationResult: Comprehensive validation results
+        # TR3-compliant HL level codes for 278
+        self.valid_hl_codes = {
+            '20': 'Information Source',
+            '21': 'Information Receiver', 
+            '22': 'Subscriber',
+            '23': 'Dependent'
+        }
+        
+        # Required NM1 entity identifiers for TR3 compliance
+        self.required_nm1_qualifiers = {
+            'PR': 'Payer (Required)',
+            'IL': 'Insured/Subscriber (Required)'
+        }
+        
+        self.recommended_nm1_qualifiers = {
+            '82': 'Rendering Provider',
+            '1P': 'Provider',
+            'QC': 'Patient'
+        }
+        
+        logger.info(f"Production TR3 validator initialized for version {self.tr3_version}")
+    
+    def validate_strict_tr3_compliance(self, parsed_edi: ParsedEDI) -> ValidationResult:
+        """
+        Perform strict TR3 compliance validation with zero tolerance for errors.
+        Production-ready validation that ensures complete TR3 conformance.
         """
         try:
             start_time = time.time()
-            logger.info(f"Starting validation of {len(parsed_edi.segments)} segments")
-            
             issues = []
             
-            # 1. Structural validation
-            structural_issues = self._validate_structure(parsed_edi)
-            issues.extend(structural_issues)
+            # 1. Envelope Structure Validation (Critical)
+            envelope_issues = self._validate_envelope_structure(parsed_edi)
+            issues.extend(envelope_issues)
             
-            # 2. Segment-level validation
-            segment_issues = self._validate_segments(parsed_edi)
-            issues.extend(segment_issues)
+            # 2. Transaction Set Validation (Critical)
+            transaction_issues = self._validate_transaction_structure(parsed_edi)
+            issues.extend(transaction_issues)
             
-            # 3. TR3 compliance validation
-            tr3_issues = self._validate_tr3_compliance(parsed_edi)
-            issues.extend(tr3_issues)
+            # 3. Hierarchical Structure Validation (Critical for 278)
+            hierarchy_issues = self._validate_hierarchical_structure(parsed_edi)
+            issues.extend(hierarchy_issues)
             
-            # Calculate overall validity - only CRITICAL issues prevent processing
-            critical_issues = [issue for issue in issues if issue.level == ValidationLevel.CRITICAL]
-            error_issues = [issue for issue in issues if issue.level == ValidationLevel.ERROR]
+            # 4. Entity Identification Validation (Critical)
+            entity_issues = self._validate_entity_identification(parsed_edi)
+            issues.extend(entity_issues)
             
-            # Document is valid if no critical issues and major structure is intact
-            is_valid = len(critical_issues) == 0
+            # 5. Data Element Validation (Critical)
+            element_issues = self._validate_data_elements(parsed_edi)
+            issues.extend(element_issues)
             
-            # TR3 compliance is stricter - no errors or warnings in TR3 validation
-            tr3_error_issues = [issue for issue in tr3_issues if issue.level in [ValidationLevel.CRITICAL, ValidationLevel.ERROR]]
-            tr3_compliance = len(tr3_error_issues) == 0
+            # 6. TR3 Business Rules Validation (Critical)
+            business_issues = self._validate_business_rules(parsed_edi)
+            issues.extend(business_issues)
             
-            # Generate improvement suggestions
-            suggestions = self._generate_suggestions(issues)
+            # Strict compliance assessment
+            critical_issues = [i for i in issues if i.level == ValidationLevel.CRITICAL]
+            error_issues = [i for i in issues if i.level == ValidationLevel.ERROR]
+            
+            # Production rule: ANY critical or error issue fails TR3 compliance
+            is_valid = len(critical_issues) == 0 and len(error_issues) == 0
+            tr3_compliant = is_valid  # Strict: must be error-free for TR3 compliance
             
             validation_time = time.time() - start_time
             
-            logger.info(f"✅ Validation completed in {validation_time:.2f}s: Valid={is_valid}, TR3={tr3_compliance}, Issues={len(issues)}")
+            logger.info(f"Production TR3 validation: Valid={is_valid}, Issues={len(issues)}, Time={validation_time:.3f}s")
             
             return ValidationResult(
                 is_valid=is_valid,
                 issues=issues,
                 segments_validated=len(parsed_edi.segments),
                 validation_time=validation_time,
-                tr3_compliance=tr3_compliance,
-                suggested_improvements=suggestions
+                tr3_compliance=tr3_compliant,
+                suggested_improvements=self._generate_production_suggestions(issues)
             )
             
         except Exception as e:
-            logger.error(f"Validation failed: {str(e)}")
+            logger.error(f"Production TR3 validation failed: {str(e)}")
             return ValidationResult(
                 is_valid=False,
                 issues=[ValidationIssue(
                     level=ValidationLevel.CRITICAL,
-                    code="VAL001",
-                    message=f"Validation process failed: {str(e)}"
+                    code="TR3_SYSTEM_ERROR",
+                    message=f"TR3 validation system error: {str(e)}"
                 )],
                 segments_validated=0,
                 validation_time=0.0,
                 tr3_compliance=False,
-                suggested_improvements=["Fix validation process errors"]
+                suggested_improvements=["Fix TR3 validation system errors before processing"]
             )
     
-    def _validate_structure(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
-        """Validate overall EDI structure."""
+    def _validate_envelope_structure(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
+        """Validate ISA/GS/GE/IEA envelope structure per TR3."""
         issues = []
+        segments = parsed_edi.segments
         
-        try:
-            segments = parsed_edi.segments
-            
-            # Check for required envelope segments
-            has_isa = any(seg.segment_id == 'ISA' for seg in segments)
-            has_gs = any(seg.segment_id == 'GS' for seg in segments)
-            has_st = any(seg.segment_id == 'ST' for seg in segments)
-            has_se = any(seg.segment_id == 'SE' for seg in segments)
-            has_ge = any(seg.segment_id == 'GE' for seg in segments)
-            has_iea = any(seg.segment_id == 'IEA' for seg in segments)
-            
-            if not has_isa:
+        # Check envelope segment presence and order
+        envelope_segments = ['ISA', 'GS', 'ST']
+        trailer_segments = ['SE', 'GE', 'IEA']
+        
+        # Validate header envelope
+        for i, seg_id in enumerate(envelope_segments):
+            found_segments = [s for s in segments if s.segment_id == seg_id]
+            if not found_segments:
                 issues.append(ValidationIssue(
                     level=ValidationLevel.CRITICAL,
-                    code="STR001",
-                    message="Missing ISA (Interchange Header) segment",
-                    suggested_fix="Add ISA segment at the beginning of the file"
+                    code=f"TR3_ENV_{seg_id}_MISSING",
+                    message=f"Missing required envelope segment {seg_id}",
+                    suggested_fix=f"Add {seg_id} segment in proper envelope position"
                 ))
-            
-            if not has_gs:
-                issues.append(ValidationIssue(
-                    level=ValidationLevel.WARNING,
-                    code="STR002",
-                    message="Missing GS (Functional Group Header) segment",
-                    suggested_fix="Add GS segment after ISA segment"
-                ))
-            
-            if not has_st:
-                issues.append(ValidationIssue(
-                    level=ValidationLevel.CRITICAL,
-                    code="STR003",
-                    message="Missing ST (Transaction Set Header) segment",
-                    suggested_fix="Add ST segment to start transaction set"
-                ))
-            
-            # Check segment count
-            if len(segments) < 5:
-                issues.append(ValidationIssue(
-                    level=ValidationLevel.WARNING,
-                    code="STR004",
-                    message=f"Very few segments detected: {len(segments)}",
-                    suggested_fix="Verify file completeness and parsing accuracy"
-                ))
-            
-            # Check for X12 278 specific segments
-            has_bht = any(seg.segment_id == 'BHT' for seg in segments)
-            if not has_bht:
-                issues.append(ValidationIssue(
-                    level=ValidationLevel.WARNING,
-                    code="STR005",
-                    message="Missing BHT (Beginning of Hierarchical Transaction) segment",
-                    suggested_fix="Add BHT segment after ST segment for X12 278"
-                ))
-            
-        except Exception as e:
-            issues.append(ValidationIssue(
-                level=ValidationLevel.CRITICAL,
-                code="STR999",
-                message=f"Structure validation error: {str(e)}"
-            ))
-        
-        return issues
-    
-    def _validate_segments(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
-        """Validate individual segments."""
-        issues = []
-        
-        try:
-            for segment in parsed_edi.segments:
-                # Check segment ID format
-                if not segment.segment_id or len(segment.segment_id) < 2:
-                    issues.append(ValidationIssue(
-                        level=ValidationLevel.ERROR,
-                        code="SEG001",
-                        message=f"Invalid segment ID: '{segment.segment_id}'",
-                        segment=segment.segment_id,
-                        line_number=segment.position
-                    ))
-                
-                # Check for minimum elements based on segment type
-                min_elements = {
-                    'ISA': 16,
-                    'GS': 8,
-                    'ST': 2,
-                    'BHT': 4,
-                    'HL': 3,
-                    'NM1': 3,
-                    'SE': 2,
-                    'GE': 2,
-                    'IEA': 2
-                }
-                
-                min_required = min_elements.get(segment.segment_id, 0)
-                if min_required > 0 and len(segment.elements) < min_required:
-                    issues.append(ValidationIssue(
-                        level=ValidationLevel.WARNING,
-                        code="SEG002",
-                        message=f"Segment {segment.segment_id} has {len(segment.elements)} elements, minimum {min_required} required",
-                        segment=segment.segment_id,
-                        line_number=segment.position,
-                        suggested_fix=f"Add missing elements to {segment.segment_id} segment"
-                    ))
-        
-        except Exception as e:
-            issues.append(ValidationIssue(
-                level=ValidationLevel.ERROR,
-                code="SEG999",
-                message=f"Segment validation error: {str(e)}"
-            ))
-        
-        return issues
-    
-    def _validate_tr3_compliance(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
-        """Validate TR3 implementation guide compliance for X12 278."""
-        issues = []
-        
-        try:
-            segments = parsed_edi.segments
-            
-            # Check for required X12 278 transaction structure
-            st_segments = [seg for seg in segments if seg.segment_id == 'ST']
-            
-            for st_seg in st_segments:
-                if len(st_seg.elements) >= 1:
-                    transaction_type = st_seg.elements[0]
-                    if transaction_type != '278':
-                        issues.append(ValidationIssue(
-                            level=ValidationLevel.ERROR,
-                            code="TR3001",
-                            message=f"Expected transaction type 278, found {transaction_type}",
-                            segment='ST',
-                            line_number=st_seg.position,
-                            suggested_fix="Change ST01 to '278' for X12 278 transactions"
-                        ))
-            
-            # Check for required hierarchical structure
-            hl_segments = [seg for seg in segments if seg.segment_id == 'HL']
-            
-            if not hl_segments:
+            elif len(found_segments) > 1:
                 issues.append(ValidationIssue(
                     level=ValidationLevel.ERROR,
-                    code="TR3002",
-                    message="Missing HL (Hierarchical Level) segments required for X12 278",
-                    suggested_fix="Add HL segments to define hierarchical structure"
-                ))
-            else:
-                # Validate HL level codes for 278
-                valid_level_codes = ['20', '21', '22', '23']
-                for hl_seg in hl_segments:
-                    if len(hl_seg.elements) >= 3:
-                        level_code = hl_seg.elements[2]
-                        if level_code not in valid_level_codes:
-                            issues.append(ValidationIssue(
-                                level=ValidationLevel.WARNING,
-                                code="TR3003",
-                                message=f"Unusual HL level code: {level_code}",
-                                segment='HL',
-                                line_number=hl_seg.position,
-                                suggested_fix=f"Verify HL03 level code. Expected: {', '.join(valid_level_codes)}"
-                            ))
-            
-            # Check for required NM1 segments with proper qualifiers
-            nm1_segments = [seg for seg in segments if seg.segment_id == 'NM1']
-            required_qualifiers = ['PR', 'IL']  # Payer, Insured (minimum required)
-            recommended_qualifiers = ['82', '1P']  # Rendering Provider, Physician (recommended)
-            
-            found_qualifiers = []
-            for nm1_seg in nm1_segments:
-                if len(nm1_seg.elements) >= 1:
-                    qualifier = nm1_seg.elements[0]
-                    found_qualifiers.append(qualifier)
-            
-            # Check required qualifiers (errors)
-            for req_qual in required_qualifiers:
-                if req_qual not in found_qualifiers:
-                    issues.append(ValidationIssue(
-                        level=ValidationLevel.ERROR,
-                        code="TR3004",
-                        message=f"Missing required NM1 segment with qualifier '{req_qual}'",
-                        suggested_fix=f"Add NM1 segment with qualifier '{req_qual}' for party identification"
-                    ))
-            
-            # Check recommended qualifiers (warnings)
-            for rec_qual in recommended_qualifiers:
-                if rec_qual not in found_qualifiers:
-                    issues.append(ValidationIssue(
-                        level=ValidationLevel.INFO,
-                        code="TR3004B",
-                        message=f"Consider adding NM1 segment with qualifier '{rec_qual}' for complete identification",
-                        suggested_fix=f"Add NM1 segment with qualifier '{rec_qual}' for enhanced compliance"
-                    ))
-            
-            # Check version compliance
-            if parsed_edi.header.version not in ['005010X279A1', '005010X217']:
-                issues.append(ValidationIssue(
-                    level=ValidationLevel.INFO,
-                    code="TR3005",
-                    message=f"Version {parsed_edi.header.version} may not be current TR3 compliant version",
-                    suggested_fix="Consider updating to 005010X279A1 for latest TR3 compliance"
+                    code=f"TR3_ENV_{seg_id}_DUPLICATE",
+                    message=f"Multiple {seg_id} segments found, only one allowed per interchange",
+                    suggested_fix=f"Remove duplicate {seg_id} segments"
                 ))
         
-        except Exception as e:
+        # Validate trailer envelope
+        for seg_id in trailer_segments:
+            found_segments = [s for s in segments if s.segment_id == seg_id]
+            if not found_segments:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code=f"TR3_ENV_{seg_id}_MISSING",
+                    message=f"Missing required trailer segment {seg_id}",
+                    suggested_fix=f"Add {seg_id} segment in proper trailer position"
+                ))
+        
+        # Validate ISA segment elements
+        isa_segments = [s for s in segments if s.segment_id == 'ISA']
+        if isa_segments:
+            isa_seg = isa_segments[0]
+            if len(isa_seg.elements) < 16:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code="TR3_ISA_INCOMPLETE",
+                    message=f"ISA segment has {len(isa_seg.elements)} elements, requires 16",
+                    segment='ISA',
+                    line_number=isa_seg.position,
+                    suggested_fix="Complete all 16 ISA elements per X12 standard"
+                ))
+            
+            # Validate ISA version
+            if len(isa_seg.elements) >= 12:
+                version = isa_seg.elements[11]
+                if version not in ['00501', '00401']:
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.ERROR,
+                        code="TR3_ISA_VERSION",
+                        message=f"ISA version {version} may not be TR3 compliant",
+                        segment='ISA',
+                        line_number=isa_seg.position,
+                        suggested_fix="Use ISA version 00501 for TR3 005010X279A1 compliance"
+                    ))
+        
+        return issues
+    
+    def _validate_transaction_structure(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
+        """Validate ST/BHT transaction structure per TR3."""
+        issues = []
+        segments = parsed_edi.segments
+        
+        # Validate ST segment
+        st_segments = [s for s in segments if s.segment_id == 'ST']
+        if not st_segments:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.CRITICAL,
+                code="TR3_ST_MISSING",
+                message="Missing ST (Transaction Set Header) segment",
+                suggested_fix="Add ST segment with transaction type 278"
+            ))
+        else:
+            st_seg = st_segments[0]
+            if len(st_seg.elements) < 2:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code="TR3_ST_INCOMPLETE",
+                    message="ST segment missing required elements",
+                    segment='ST',
+                    line_number=st_seg.position,
+                    suggested_fix="ST segment requires ST01 (278) and ST02 (control number)"
+                ))
+            else:
+                # Validate transaction type
+                if st_seg.elements[0] != '278':
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.CRITICAL,
+                        code="TR3_ST_WRONG_TYPE",
+                        message=f"Expected transaction type 278, found {st_seg.elements[0]}",
+                        segment='ST',
+                        line_number=st_seg.position,
+                        suggested_fix="Change ST01 to '278' for X12 278 transactions"
+                    ))
+        
+        # Validate BHT segment (required for 278)
+        bht_segments = [s for s in segments if s.segment_id == 'BHT']
+        if not bht_segments:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.CRITICAL,
+                code="TR3_BHT_MISSING",
+                message="Missing BHT (Beginning of Hierarchical Transaction) segment",
+                suggested_fix="Add BHT segment after ST segment for X12 278"
+            ))
+        else:
+            bht_seg = bht_segments[0]
+            if len(bht_seg.elements) < 6:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.ERROR,
+                    code="TR3_BHT_INCOMPLETE",
+                    message=f"BHT segment has {len(bht_seg.elements)} elements, requires minimum 6",
+                    segment='BHT',
+                    line_number=bht_seg.position,
+                    suggested_fix="Complete BHT elements: structure code, purpose, reference ID, date, time, transaction type"
+                ))
+        
+        return issues
+    
+    def _validate_hierarchical_structure(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
+        """Validate HL hierarchical structure per TR3 requirements."""
+        issues = []
+        segments = parsed_edi.segments
+        
+        hl_segments = [s for s in segments if s.segment_id == 'HL']
+        if not hl_segments:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.CRITICAL,
+                code="TR3_HL_MISSING",
+                message="Missing HL (Hierarchical Level) segments required for X12 278",
+                suggested_fix="Add HL segments to define hierarchical structure per TR3"
+            ))
+            return issues
+        
+        # Validate HL segment structure
+        for hl_seg in hl_segments:
+            if len(hl_seg.elements) < 4:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.ERROR,
+                    code="TR3_HL_INCOMPLETE",
+                    message=f"HL segment at position {hl_seg.position} has {len(hl_seg.elements)} elements, requires 4",
+                    segment='HL',
+                    line_number=hl_seg.position,
+                    suggested_fix="HL requires: ID number, parent ID, level code, child code"
+                ))
+                continue
+            
+            # Validate level code (HL03)
+            level_code = hl_seg.elements[2]
+            if level_code not in self.valid_hl_codes:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.ERROR,
+                    code="TR3_HL_INVALID_CODE",
+                    message=f"Invalid HL level code '{level_code}' at position {hl_seg.position}",
+                    segment='HL',
+                    line_number=hl_seg.position,
+                    suggested_fix=f"Use valid TR3 level codes: {', '.join(self.valid_hl_codes.keys())}"
+                ))
+        
+        # Validate required hierarchy levels for 278
+        found_levels = [hl.elements[2] for hl in hl_segments if len(hl.elements) >= 3]
+        required_levels = ['20', '21']  # Information Source and Receiver are mandatory
+        
+        for req_level in required_levels:
+            if req_level not in found_levels:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code=f"TR3_HL_{req_level}_MISSING",
+                    message=f"Missing required HL level {req_level} ({self.valid_hl_codes[req_level]})",
+                    suggested_fix=f"Add HL segment with level code {req_level}"
+                ))
+        
+        return issues
+    
+    def _validate_entity_identification(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
+        """Validate NM1 entity identification per TR3."""
+        issues = []
+        segments = parsed_edi.segments
+        
+        nm1_segments = [s for s in segments if s.segment_id == 'NM1']
+        if not nm1_segments:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.CRITICAL,
+                code="TR3_NM1_MISSING",
+                message="Missing NM1 (Individual or Organizational Name) segments",
+                suggested_fix="Add NM1 segments for entity identification per TR3"
+            ))
+            return issues
+        
+        # Collect found qualifiers
+        found_qualifiers = []
+        for nm1_seg in nm1_segments:
+            if len(nm1_seg.elements) >= 1:
+                qualifier = nm1_seg.elements[0]
+                found_qualifiers.append(qualifier)
+                
+                # Validate NM1 segment completeness
+                if len(nm1_seg.elements) < 3:
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.ERROR,
+                        code="TR3_NM1_INCOMPLETE",
+                        message=f"NM1 segment with qualifier {qualifier} has {len(nm1_seg.elements)} elements, requires minimum 3",
+                        segment='NM1',
+                        line_number=nm1_seg.position,
+                        suggested_fix="NM1 requires: entity qualifier, entity type, name"
+                    ))
+        
+        # Check required qualifiers
+        for req_qual, description in self.required_nm1_qualifiers.items():
+            if req_qual not in found_qualifiers:
+                issues.append(ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code=f"TR3_NM1_{req_qual}_MISSING",
+                    message=f"Missing required NM1 segment with qualifier '{req_qual}' ({description})",
+                    suggested_fix=f"Add NM1 segment with qualifier '{req_qual}' for {description}"
+                ))
+        
+        return issues
+    
+    def _validate_data_elements(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
+        """Validate data element formats and values per TR3."""
+        issues = []
+        segments = parsed_edi.segments
+        
+        # Validate specific segment data elements
+        for segment in segments:
+            seg_id = segment.segment_id
+            elements = segment.elements
+            
+            # ISA date/time validation
+            if seg_id == 'ISA' and len(elements) >= 10:
+                # ISA09 - Interchange Date (YYMMDD)
+                date_elem = elements[8]
+                if not (len(date_elem) == 6 and date_elem.isdigit()):
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.ERROR,
+                        code="TR3_ISA_DATE_FORMAT",
+                        message=f"ISA09 date format invalid: '{date_elem}' (should be YYMMDD)",
+                        segment='ISA',
+                        line_number=segment.position,
+                        suggested_fix="Use YYMMDD format for ISA09 interchange date"
+                    ))
+                
+                # ISA10 - Interchange Time (HHMM)
+                time_elem = elements[9]
+                if not (len(time_elem) == 4 and time_elem.isdigit()):
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.ERROR,
+                        code="TR3_ISA_TIME_FORMAT",
+                        message=f"ISA10 time format invalid: '{time_elem}' (should be HHMM)",
+                        segment='ISA',
+                        line_number=segment.position,
+                        suggested_fix="Use HHMM format for ISA10 interchange time"
+                    ))
+            
+            # GS version validation
+            elif seg_id == 'GS' and len(elements) >= 8:
+                version = elements[7]
+                if version != self.tr3_version:
+                    issues.append(ValidationIssue(
+                        level=ValidationLevel.WARNING,
+                        code="TR3_GS_VERSION",
+                        message=f"GS08 version '{version}' differs from expected TR3 version '{self.tr3_version}'",
+                        segment='GS',
+                        line_number=segment.position,
+                        suggested_fix=f"Use {self.tr3_version} for current TR3 compliance"
+                    ))
+        
+        return issues
+    
+    def _validate_business_rules(self, parsed_edi: ParsedEDI) -> List[ValidationIssue]:
+        """Validate TR3 business rules and logical constraints."""
+        issues = []
+        segments = parsed_edi.segments
+        
+        # Business Rule: HL hierarchy must be logically consistent
+        hl_segments = [s for s in segments if s.segment_id == 'HL']
+        if len(hl_segments) >= 2:
+            # Check parent-child relationships
+            for hl_seg in hl_segments:
+                if len(hl_seg.elements) >= 4:
+                    hl_id = hl_seg.elements[0]
+                    parent_id = hl_seg.elements[1]
+                    level_code = hl_seg.elements[2]
+                    
+                    # Validate parent reference exists (if not root)
+                    if parent_id and parent_id != '':
+                        parent_exists = any(
+                            h.elements[0] == parent_id 
+                            for h in hl_segments 
+                            if len(h.elements) >= 1
+                        )
+                        if not parent_exists:
+                            issues.append(ValidationIssue(
+                                level=ValidationLevel.ERROR,
+                                code="TR3_HL_PARENT_MISSING",
+                                message=f"HL segment references non-existent parent ID '{parent_id}'",
+                                segment='HL',
+                                line_number=hl_seg.position,
+                                suggested_fix="Ensure parent HL segment exists before child reference"
+                            ))
+        
+        # Business Rule: Each HL level should have corresponding NM1 identification
+        hl_levels = [s.elements[2] for s in hl_segments if len(s.elements) >= 3]
+        nm1_qualifiers = [s.elements[0] for s in segments if s.segment_id == 'NM1' and len(s.elements) >= 1]
+        
+        # Level 20 (Information Source) should have PR (Payer) identification
+        if '20' in hl_levels and 'PR' not in nm1_qualifiers:
             issues.append(ValidationIssue(
                 level=ValidationLevel.ERROR,
-                code="TR3999",
-                message=f"TR3 validation error: {str(e)}"
+                code="TR3_BUSINESS_RULE_1",
+                message="HL level 20 (Information Source) present but missing NM1*PR (Payer) identification",
+                suggested_fix="Add NM1*PR segment for Information Source identification"
+            ))
+        
+        # Level 22 (Subscriber) should have IL (Insured) identification
+        if '22' in hl_levels and 'IL' not in nm1_qualifiers:
+            issues.append(ValidationIssue(
+                level=ValidationLevel.ERROR,
+                code="TR3_BUSINESS_RULE_2",
+                message="HL level 22 (Subscriber) present but missing NM1*IL (Insured) identification",
+                suggested_fix="Add NM1*IL segment for Subscriber identification"
             ))
         
         return issues
     
-    def _generate_suggestions(self, issues: List[ValidationIssue]) -> List[str]:
-        """Generate improvement suggestions based on validation issues."""
+    def _generate_production_suggestions(self, issues: List[ValidationIssue]) -> List[str]:
+        """Generate production-ready improvement suggestions."""
         suggestions = []
         
+        critical_count = len([i for i in issues if i.level == ValidationLevel.CRITICAL])
+        error_count = len([i for i in issues if i.level == ValidationLevel.ERROR])
+        warning_count = len([i for i in issues if i.level == ValidationLevel.WARNING])
+        
+        if critical_count > 0:
+            suggestions.append(f"PRODUCTION BLOCKER: {critical_count} critical TR3 compliance issue(s) must be resolved")
+            suggestions.append("Document cannot be processed until all critical issues are fixed")
+        
+        if error_count > 0:
+            suggestions.append(f"TR3 COMPLIANCE FAILURE: {error_count} error(s) prevent full compliance")
+            suggestions.append("All errors must be resolved for production TR3 compliance")
+        
+        if warning_count > 0:
+            suggestions.append(f"OPTIMIZATION: {warning_count} warning(s) should be addressed for best practices")
+        
+        # Add specific guidance
+        issue_codes = [issue.code for issue in issues]
+        
+        if any(code.startswith('TR3_ENV_') for code in issue_codes):
+            suggestions.append("Review X12 envelope structure (ISA/GS/ST/SE/GE/IEA) requirements")
+        
+        if any(code.startswith('TR3_HL_') for code in issue_codes):
+            suggestions.append("Verify hierarchical structure follows TR3 005010X279A1 specifications")
+        
+        if any(code.startswith('TR3_NM1_') for code in issue_codes):
+            suggestions.append("Ensure all required entity identifications are present per TR3")
+        
+        if not issues:
+            suggestions.append("✅ PRODUCTION READY: Document meets strict TR3 compliance requirements")
+            suggestions.append("Document approved for production processing")
+        
+        return suggestions[:8]
+
+
+# Update EDI278Validator to use production validator
+class EDI278Validator:
+    """X12 278 specific validator with production-grade TR3 compliance checking."""
+    
+    def __init__(self):
+        """Initialize validator with production TR3 validator."""
+        self.production_validator = ProductionTR3Validator()
+        logger.info("EDI278Validator initialized with production TR3 compliance")
+    
+    def validate(self, parsed_edi: ParsedEDI) -> ValidationResult:
+        """
+        Production-grade validation of X12 278 EDI document with strict TR3 compliance.
+        
+        Args:
+            parsed_edi: Parsed EDI structure
+            
+        Returns:
+            ValidationResult: Comprehensive validation results with strict TR3 compliance
+        """
         try:
-            # Count issues by level
-            critical_count = len([i for i in issues if i.level == ValidationLevel.CRITICAL])
-            error_count = len([i for i in issues if i.level == ValidationLevel.ERROR])
-            warning_count = len([i for i in issues if i.level == ValidationLevel.WARNING])
-            
-            # Priority-based suggestions
-            if critical_count > 0:
-                suggestions.append(f"URGENT: Fix {critical_count} critical issue(s) that prevent processing")
-                suggestions.append("Focus on structural integrity and required segments first")
-            
-            if error_count > 0:
-                suggestions.append(f"Address {error_count} error(s) for full compliance")
-                suggestions.append("Review segment element counts and data formats")
-            
-            if warning_count > 0:
-                suggestions.append(f"Consider resolving {warning_count} warning(s) for optimal compliance")
-            
-            # Specific suggestions based on common issues
-            issue_codes = [issue.code for issue in issues]
-            
-            if 'STR001' in issue_codes or 'STR003' in issue_codes:
-                suggestions.append("Verify file contains complete EDI envelope structure")
-            
-            if 'TR3002' in issue_codes:
-                suggestions.append("Add hierarchical structure with HL segments for X12 278 compliance")
-            
-            if 'SEG002' in issue_codes:
-                suggestions.append("Check segment element requirements against X12 278 TR3 guide")
-            
-            # Add general suggestions if no specific issues
-            if not issues:
-                suggestions.append("Document appears to be well-formed and compliant")
-                suggestions.append("Consider periodic validation against updated TR3 specifications")
+            # Use production TR3 validator for strict compliance
+            return self.production_validator.validate_strict_tr3_compliance(parsed_edi)
             
         except Exception as e:
-            logger.warning(f"Error generating suggestions: {e}")
-            suggestions.append("Review validation results and address identified issues")
-        
-        return suggestions[:10]  # Limit to top 10 suggestions
+            logger.error(f"Production validation failed: {str(e)}")
+            return ValidationResult(
+                is_valid=False,
+                issues=[ValidationIssue(
+                    level=ValidationLevel.CRITICAL,
+                    code="PROD_VAL_ERROR",
+                    message=f"Production validation system error: {str(e)}"
+                )],
+                segments_validated=0,
+                validation_time=0.0,
+                tr3_compliance=False,
+                suggested_improvements=["Fix production validation system before processing"]
+            )

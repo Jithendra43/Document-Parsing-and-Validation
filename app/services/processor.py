@@ -1,20 +1,20 @@
-"""Main EDI processing service orchestrating all components."""
+"""Enhanced EDI processing service with production-grade validation and error handling."""
 
-import uuid
 import asyncio
+import uuid
+import json
 import time
-from datetime import datetime
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Union
 from pathlib import Path
 
-from ..config import settings
+from ..core.edi_parser import EDI278Parser, EDI278Validator, ProductionTR3Validator
+from ..core.fhir_mapper import X12To278FHIRMapper, ProductionFHIRMapper, get_fhir_mapper
 from ..core.models import (
-    ProcessingJob, ProcessingStatus, EDIFileUpload, 
-    ParsedEDI, ValidationResult, FHIRMapping, AIAnalysis, FHIRMappingResult, FHIRResource
+    ParsedEDI, ValidationResult, FHIRMapping, AIAnalysis, ProcessingJob,
+    EDIFileUpload, ProcessingStatus, ValidationLevel
 )
-from ..core.edi_parser import EDI278Parser, EDI278Validator, EDIParsingError
-from ..core.fhir_mapper import X12To278FHIRMapper, FHIRToX12Mapper, FHIRMappingError
-from ..ai.analyzer import EDIAIAnalyzer, SmartEDIValidator, AIAnalysisError
+from ..ai.analyzer import EDIAIAnalyzer, SmartEDIValidator
 from ..core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,304 +25,211 @@ class EDIProcessingError(Exception):
     pass
 
 
-class EDIProcessingService:
-    """Main service for processing EDI files with AI analysis and FHIR mapping."""
+class ProductionEDIProcessingService:
+    """
+    Production-grade EDI processing service with strict TR3 compliance and comprehensive error handling.
+    Implements industry-standard validation and processing workflows for healthcare EDI transactions.
+    """
     
     def __init__(self):
-        """Initialize the EDI processing service."""
+        """Initialize production processing service with enhanced components."""
+        # Core components with production enhancements
         self.parser = EDI278Parser()
-        self.validator = EDI278Validator()
+        self.validator = EDI278Validator()  # Now uses ProductionTR3Validator internally
+        self.production_validator = ProductionTR3Validator()  # Direct access for strict validation
+        self.fhir_mapper = ProductionFHIRMapper()  # Production-grade FHIR mapper
+        
+        # AI components (optional but recommended)
         self.ai_analyzer = EDIAIAnalyzer()
-        self.fhir_mapper = X12To278FHIRMapper()
+        self.smart_validator = SmartEDIValidator(self.ai_analyzer) if self.ai_analyzer.is_available else None
+        
+        # Job tracking and statistics
         self.jobs: Dict[str, ProcessingJob] = {}
-        self.logger = get_logger(__name__)
-        
-        # Initialize directories
-        self.upload_dir = Path(settings.upload_dir)
-        self.output_dir = Path(settings.output_dir)
-        self.temp_dir = Path(settings.temp_dir)
-        
-        # Create directories if they don't exist
-        for directory in [self.upload_dir, self.output_dir, self.temp_dir]:
-            directory.mkdir(parents=True, exist_ok=True)
-            self.logger.info(f"📁 Directory ready: {directory}")
-        
-        # Initialize smart validator with AI if available
-        self.smart_validator = None
-        try:
-            if self.ai_analyzer.is_available:
-                self.smart_validator = SmartEDIValidator(self.ai_analyzer)
-                logger.info("🤖 AI-enhanced validation enabled")
-            else:
-                logger.info("📊 Using standard validation (AI not available)")
-        except Exception as e:
-            logger.warning(f"Smart validator initialization warning: {str(e)}")
-        
-        # Initialize statistics
-        self.stats = {
-            "total_files_processed": 0,
-            "successful_conversions": 0,
-            "failed_conversions": 0,
-            "average_processing_time": 0.0,
-            "most_common_errors": [],
-            "last_updated": datetime.utcnow()
+        self.processing_stats = {
+            'total_processed': 0,
+            'successful': 0,
+            'failed': 0,
+            'tr3_compliant': 0,
+            'tr3_non_compliant': 0,
+            'average_processing_time': 0.0,
+            'last_reset': datetime.utcnow()
         }
         
-        logger.info("✅ EDI Processing Service initialized")
-        logger.info(f"🤖 AI Analysis: {'enabled' if self.ai_analyzer.is_available else 'disabled'}")
-        logger.info(f"🔄 FHIR Mapping: enabled")
-        logger.info(f"✅ Validation: enabled")
-    
-    async def process_file(self, file_path: str, upload_request: EDIFileUpload) -> ProcessingJob:
-        """
-        Process an EDI file with comprehensive validation and conversion.
-        
-        Args:
-            file_path: Path to the EDI file
-            upload_request: Upload request details
-            
-        Returns:
-            ProcessingJob: Processing job with results
-        """
-        job_id = str(uuid.uuid4())
-        
-        # Get file size
-        try:
-            file_size = Path(file_path).stat().st_size
-        except Exception:
-            file_size = 0
-        
-        # Create job
-        job = ProcessingJob(
-            job_id=job_id,
-            filename=upload_request.filename,
-            status=ProcessingStatus.PROCESSING,
-            started_at=datetime.utcnow(),
-            file_size=file_size
-        )
-        
-        self.jobs[job_id] = job
-        
-        try:
-            logger.info(f"[{job_id}] Starting processing for {upload_request.filename}")
-            
-            # Parse EDI file
-            job.parsed_edi = await self._parse_edi_file(file_path)
-            
-            # Validate
-            job.validation_result = await self._validate_edi(job.parsed_edi, upload_request)
-            
-            # Map to FHIR if not validation-only
-            if not upload_request.validate_only:
-                try:
-                    job.fhir_mapping = await self._map_to_fhir(job.parsed_edi)
-                    logger.info(f"[{job_id}] FHIR mapping completed successfully")
-                except Exception as e:
-                    logger.warning(f"[{job_id}] FHIR mapping failed: {str(e)} - continuing without FHIR mapping")
-                    job.fhir_mapping = None
-            
-            # AI analysis if enabled and requested
-            if upload_request.enable_ai_analysis and self.ai_analyzer.is_available:
-                try:
-                    job.ai_analysis = await self._analyze_with_ai(job.parsed_edi, job.validation_result)
-                    logger.info(f"[{job_id}] AI analysis completed successfully")
-                except Exception as e:
-                    logger.warning(f"[{job_id}] AI analysis failed: {str(e)} - continuing without AI analysis")
-                    job.ai_analysis = None
-            elif upload_request.enable_ai_analysis and not self.ai_analyzer.is_available:
-                logger.info(f"[{job_id}] AI analysis requested but not available")
-            
-            # Complete job
-            job.status = ProcessingStatus.COMPLETED
-            job.completed_at = datetime.utcnow()
-            job.processing_time = (job.completed_at - job.started_at).total_seconds()
-            
-            # Update statistics
-            self.stats["total_files_processed"] += 1
-            self.stats["successful_conversions"] += 1
-            self.stats["last_updated"] = datetime.utcnow()
-            
-            logger.info(f"[{job_id}] Processing completed successfully in {job.processing_time:.2f}s")
-            return job
-            
-        except Exception as e:
-            job.status = ProcessingStatus.FAILED
-            job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
-            job.processing_time = (job.completed_at - job.started_at).total_seconds() if job.started_at else 0
-            
-            # Update statistics
-            self.stats["total_files_processed"] += 1
-            self.stats["failed_conversions"] += 1
-            self.stats["last_updated"] = datetime.utcnow()
-            
-            logger.error(f"[{job_id}] Processing failed: {str(e)}")
-            return job
-    
+        logger.info("Production EDI Processing Service initialized with strict TR3 compliance")
+        logger.info(f"AI Analysis: {'enabled' if self.ai_analyzer.is_available else 'disabled'}")
+        logger.info(f"Smart Validation: {'enabled' if self.smart_validator else 'disabled'}")
+
     async def process_content(self, content: str, upload_request: EDIFileUpload) -> ProcessingJob:
         """
-        Process EDI content from string.
+        Process EDI content with production-grade validation and error handling.
         
         Args:
-            content: EDI content as string
-            upload_request: Upload request details
+            content: EDI content string
+            upload_request: Processing configuration
             
         Returns:
-            ProcessingJob: Processing job with results
+            ProcessingJob: Complete processing results with strict validation
         """
         job_id = str(uuid.uuid4())
-        
-        # Create job
         job = ProcessingJob(
             job_id=job_id,
             filename=upload_request.filename,
-            status=ProcessingStatus.PROCESSING,
-            started_at=datetime.utcnow(),
+            status=ProcessingStatus.PENDING,
             file_size=len(content.encode('utf-8'))
         )
         
         self.jobs[job_id] = job
-        error_details = []
         
         try:
-            logger.info(f"[{job_id}] Starting content processing for {upload_request.filename}")
+            logger.info(f"Starting production processing for job {job_id}")
+            job.status = ProcessingStatus.PROCESSING
+            job.started_at = datetime.utcnow()
             
-            # Parse EDI content directly
+            start_time = time.time()
+            error_details = []
+            
+            # Phase 1: EDI Parsing with comprehensive error handling
             try:
-                job.parsed_edi = await self._parse_edi_content(content, upload_request.filename)
-                logger.info(f"[{job_id}] EDI parsing completed: {len(job.parsed_edi.segments)} segments")
+                logger.info(f"[{job_id}] Phase 1: EDI Parsing")
+                parsed_edi = await self._parse_edi_content_production(content, upload_request.filename)
+                job.parsed_edi = parsed_edi
+                logger.info(f"[{job_id}] ✅ Parsing successful: {len(parsed_edi.segments)} segments, method: {parsed_edi.parsing_method}")
             except Exception as e:
-                error_details.append(f"EDI parsing failed: {str(e)}")
-                logger.error(f"[{job_id}] EDI parsing failed: {str(e)}")
-                job.parsed_edi = None
-            
-            # Validate (only if parsing succeeded)
-            if job.parsed_edi:
-                try:
-                    job.validation_result = await self._validate_edi(job.parsed_edi, upload_request)
-                    logger.info(f"[{job_id}] Validation completed: valid={job.validation_result.is_valid}")
-                except Exception as e:
-                    error_details.append(f"Validation failed: {str(e)}")
-                    logger.error(f"[{job_id}] Validation failed: {str(e)}")
-                    job.validation_result = None
-            else:
-                error_details.append("Validation skipped due to parsing failure")
-                job.validation_result = None
-            
-            # Map to FHIR if not validation-only and parsing succeeded
-            if not upload_request.validate_only and job.parsed_edi:
-                try:
-                    job.fhir_mapping = await self._map_to_fhir(job.parsed_edi)
-                    logger.info(f"[{job_id}] FHIR mapping completed: {len(job.fhir_mapping.resources)} resources")
-                except Exception as e:
-                    error_details.append(f"FHIR mapping failed: {str(e)}")
-                    logger.error(f"[{job_id}] FHIR mapping failed: {str(e)}")
-                    job.fhir_mapping = None
-            elif upload_request.validate_only:
-                logger.info(f"[{job_id}] FHIR mapping skipped (validation-only mode)")
-            else:
-                error_details.append("FHIR mapping skipped due to parsing failure")
-                job.fhir_mapping = None
-            
-            # AI analysis if enabled and available
-            if upload_request.enable_ai_analysis and self.ai_analyzer.is_available and job.parsed_edi and job.validation_result:
-                try:
-                    job.ai_analysis = await self._analyze_with_ai(job.parsed_edi, job.validation_result)
-                    logger.info(f"[{job_id}] AI analysis completed: confidence={job.ai_analysis.confidence_score:.2f}")
-                except Exception as e:
-                    error_details.append(f"AI analysis failed: {str(e)}")
-                    logger.error(f"[{job_id}] AI analysis failed: {str(e)}")
-                    job.ai_analysis = None
-            elif upload_request.enable_ai_analysis and not self.ai_analyzer.is_available:
-                logger.info(f"[{job_id}] AI analysis requested but not available")
-                error_details.append("AI analysis not available")
-                job.ai_analysis = None
-            elif upload_request.enable_ai_analysis and not (job.parsed_edi and job.validation_result):
-                error_details.append("AI analysis skipped due to parsing or validation failure")
-                job.ai_analysis = None
-            
-            # Determine final status
-            has_critical_failure = not job.parsed_edi
-            has_partial_success = job.parsed_edi is not None
-            
-            if has_critical_failure:
+                error_msg = f"EDI parsing failed: {str(e)}"
+                error_details.append(error_msg)
+                logger.error(f"[{job_id}] ❌ {error_msg}")
+                job.error_message = error_msg
                 job.status = ProcessingStatus.FAILED
-                job.error_message = "Critical failure: " + "; ".join(error_details)
-            elif error_details and not has_partial_success:
+                job.completed_at = datetime.utcnow()
+                self._update_stats(success=False, tr3_compliant=False)
+                return job
+            
+            # Phase 2: Production-grade TR3 Validation
+            try:
+                logger.info(f"[{job_id}] Phase 2: Production TR3 Validation")
+                validation_result = await self._validate_edi_production(parsed_edi, upload_request)
+                job.validation_result = validation_result
+                
+                # Log validation results
+                critical_issues = [i for i in validation_result.issues if i.level == ValidationLevel.CRITICAL]
+                error_issues = [i for i in validation_result.issues if i.level == ValidationLevel.ERROR]
+                
+                logger.info(f"[{job_id}] Validation: Valid={validation_result.is_valid}, TR3={validation_result.tr3_compliance}")
+                logger.info(f"[{job_id}] Issues: {len(validation_result.issues)} total, {len(critical_issues)} critical, {len(error_issues)} errors")
+                
+                # Production rule: Fail processing if critical issues exist
+                if critical_issues:
+                    error_msg = f"Production validation failed: {len(critical_issues)} critical TR3 compliance issues"
+                    error_details.append(error_msg)
+                    logger.error(f"[{job_id}] ❌ {error_msg}")
+                    job.error_message = error_msg
+                    job.status = ProcessingStatus.FAILED
+                    job.completed_at = datetime.utcnow()
+                    self._update_stats(success=False, tr3_compliant=False)
+                    return job
+                
+            except Exception as e:
+                error_msg = f"Production validation failed: {str(e)}"
+                error_details.append(error_msg)
+                logger.error(f"[{job_id}] ❌ {error_msg}")
+                job.error_message = error_msg
                 job.status = ProcessingStatus.FAILED
-                job.error_message = "Processing failed: " + "; ".join(error_details)
-            elif error_details:
-                job.status = ProcessingStatus.COMPLETED  # Partial success
-                job.error_message = "Completed with warnings: " + "; ".join(error_details)
-            else:
+                job.completed_at = datetime.utcnow()
+                self._update_stats(success=False, tr3_compliant=False)
+                return job
+            
+            # Phase 3: AI Analysis (if enabled and available)
+            if upload_request.enable_ai_analysis and self.ai_analyzer.is_available:
+                try:
+                    logger.info(f"[{job_id}] Phase 3: AI Analysis")
+                    ai_analysis = await self._analyze_with_ai_production(parsed_edi, validation_result)
+                    job.ai_analysis = ai_analysis
+                    logger.info(f"[{job_id}] ✅ AI analysis completed: confidence={ai_analysis.confidence_score:.2f}, risk={ai_analysis.risk_assessment}")
+                except Exception as e:
+                    warning_msg = f"AI analysis failed: {str(e)}"
+                    error_details.append(warning_msg)
+                    logger.warning(f"[{job_id}] ⚠️ {warning_msg}")
+                    # AI failure doesn't stop processing
+            
+            # Phase 4: FHIR Mapping (if not validation-only)
+            if not upload_request.validate_only:
+                try:
+                    logger.info(f"[{job_id}] Phase 4: Production FHIR Mapping")
+                    fhir_mapping = await self._map_to_fhir_production(parsed_edi)
+                    job.fhir_mapping = fhir_mapping
+                    logger.info(f"[{job_id}] ✅ FHIR mapping completed: {len(fhir_mapping.resources)} resources")
+                except Exception as e:
+                    warning_msg = f"FHIR mapping failed: {str(e)}"
+                    error_details.append(warning_msg)
+                    logger.warning(f"[{job_id}] ⚠️ {warning_msg}")
+                    # FHIR failure doesn't stop processing if validation passed
+            
+            # Calculate processing time and determine final status
+            processing_time = time.time() - start_time
+            job.processing_time = processing_time
+            job.completed_at = datetime.utcnow()
+            
+            # Determine final status based on production criteria
+            if error_details:
+                # Has warnings but no critical failures
                 job.status = ProcessingStatus.COMPLETED
-                job.error_message = None
-            
-            job.completed_at = datetime.utcnow()
-            job.processing_time = (job.completed_at - job.started_at).total_seconds()
-            
-            # Update statistics
-            self.stats["total_files_processed"] += 1
-            if job.status == ProcessingStatus.COMPLETED and not error_details:
-                self.stats["successful_conversions"] += 1
+                job.error_message = f"Completed with {len(error_details)} warning(s): " + "; ".join(error_details[:3])
+                logger.warning(f"[{job_id}] ⚠️ Processing completed with warnings")
             else:
-                self.stats["failed_conversions"] += 1
-            self.stats["last_updated"] = datetime.utcnow()
-            
-            logger.info(f"[{job_id}] Processing completed with status {job.status} in {job.processing_time:.2f}s")
-            return job
-            
-        except Exception as e:
-            # Catastrophic failure
-            job.status = ProcessingStatus.FAILED
-            job.error_message = f"Catastrophic processing failure: {str(e)}"
-            job.completed_at = datetime.utcnow()
-            job.processing_time = (job.completed_at - job.started_at).total_seconds() if job.started_at else 0
+                # Complete success
+                job.status = ProcessingStatus.COMPLETED
+                logger.info(f"[{job_id}] ✅ Processing completed successfully")
             
             # Update statistics
-            self.stats["total_files_processed"] += 1
-            self.stats["failed_conversions"] += 1
-            self.stats["last_updated"] = datetime.utcnow()
+            is_success = job.status == ProcessingStatus.COMPLETED
+            is_tr3_compliant = validation_result.tr3_compliance if validation_result else False
+            self._update_stats(success=is_success, tr3_compliant=is_tr3_compliant, processing_time=processing_time)
             
-            logger.error(f"[{job_id}] Catastrophic processing failure: {str(e)}")
+            logger.info(f"[{job_id}] Final status: {job.status.value}, TR3 compliant: {is_tr3_compliant}, Time: {processing_time:.2f}s")
+            
             return job
-    
-    async def _parse_edi_file(self, file_path: str) -> ParsedEDI:
-        """Parse EDI file."""
-        try:
-            # Run in thread pool for CPU-bound operation
-            loop = asyncio.get_event_loop()
-            parsed_edi = await loop.run_in_executor(
-                None, self.parser.parse_file, file_path
-            )
-            return parsed_edi
-        except EDIParsingError:
-            raise
+            
         except Exception as e:
-            raise EDIProcessingError(f"Failed to parse EDI file: {str(e)}")
-    
-    async def _parse_edi_content(self, content: str, filename: str) -> ParsedEDI:
-        """Parse EDI content from string."""
+            logger.error(f"[{job_id}] ❌ Unexpected processing error: {str(e)}")
+            job.error_message = f"Processing system error: {str(e)}"
+            job.status = ProcessingStatus.FAILED
+            job.completed_at = datetime.utcnow()
+            self._update_stats(success=False, tr3_compliant=False)
+            return job
+
+    async def _parse_edi_content_production(self, content: str, filename: str) -> ParsedEDI:
+        """Production-grade EDI parsing with enhanced error handling."""
         try:
-            # Run in thread pool for CPU-bound operation
+            # Run parsing in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
             parsed_edi = await loop.run_in_executor(
                 None, self.parser.parse_content, content, filename
             )
+            
+            # Validate parsing results
+            if not parsed_edi.segments or len(parsed_edi.segments) == 0:
+                raise EDIProcessingError("No segments were parsed from the EDI content")
+            
+            # Log parsing method and quality
+            logger.info(f"Parsed {len(parsed_edi.segments)} segments using {parsed_edi.parsing_method}")
+            
+            # Warn if using fallback parsing
+            if 'fallback' in parsed_edi.parsing_method.lower():
+                logger.warning("Using fallback parsing - consider improving EDI format for optimal processing")
+            
             return parsed_edi
-        except EDIParsingError:
-            raise
+            
         except Exception as e:
+            logger.error(f"Production EDI parsing failed: {str(e)}")
             raise EDIProcessingError(f"Failed to parse EDI content: {str(e)}")
-    
-    async def _validate_edi(self, parsed_edi: ParsedEDI, 
-                           upload_request: EDIFileUpload) -> ValidationResult:
-        """Validate parsed EDI with optional AI enhancement."""
+
+    async def _validate_edi_production(self, parsed_edi: ParsedEDI, upload_request: EDIFileUpload) -> ValidationResult:
+        """Production-grade validation with strict TR3 compliance."""
         try:
-            # Run basic validation in thread pool
+            # Use production TR3 validator for strict compliance
             loop = asyncio.get_event_loop()
             validation_result = await loop.run_in_executor(
-                None, self.validator.validate, parsed_edi
+                None, self.production_validator.validate_strict_tr3_compliance, parsed_edi
             )
             
             # Enhance with AI if available and requested
@@ -340,364 +247,163 @@ class EDIProcessingService:
             return validation_result
             
         except Exception as e:
+            logger.error(f"Production validation failed: {str(e)}")
             raise EDIProcessingError(f"Failed to validate EDI: {str(e)}")
-    
-    async def _analyze_with_ai(self, parsed_edi: ParsedEDI, 
-                              validation_result: ValidationResult) -> Optional[AIAnalysis]:
-        """
-        Perform AI analysis if available.
-        
-        Args:
-            parsed_edi: Parsed EDI structure
-            validation_result: Validation results
+
+    async def _analyze_with_ai_production(self, parsed_edi: ParsedEDI, validation_result: ValidationResult) -> Optional[AIAnalysis]:
+        """Production-grade AI analysis with enhanced error handling."""
+        try:
+            if not self.ai_analyzer.is_available:
+                logger.info("AI analysis not available")
+                return None
             
-        Returns:
-            AIAnalysis or None: AI analysis results or None if unavailable
-        """
-        if not self.ai_analyzer.is_available:
-            logger.info("AI analysis requested but analyzer not available")
-            return None
-        
-        try:
-            logger.info("Performing AI analysis...")
             ai_analysis = await self.ai_analyzer.analyze_edi(parsed_edi, validation_result)
-            logger.info(f"AI analysis completed with confidence: {ai_analysis.confidence_score:.2f}")
+            
+            # Validate AI analysis results
+            if ai_analysis.confidence_score < 0.0 or ai_analysis.confidence_score > 1.0:
+                logger.warning(f"AI confidence score out of range: {ai_analysis.confidence_score}")
+                ai_analysis.confidence_score = max(0.0, min(1.0, ai_analysis.confidence_score))
+            
             return ai_analysis
-        except AIAnalysisError as e:
-            logger.warning(f"AI analysis failed with known error: {str(e)}")
-            return None
+            
         except Exception as e:
-            logger.warning(f"AI analysis failed with unexpected error: {str(e)}")
+            logger.error(f"Production AI analysis failed: {str(e)}")
+            # Return None instead of raising - AI failure shouldn't stop processing
             return None
-    
-    async def _map_to_fhir(self, parsed_edi: ParsedEDI) -> FHIRMapping:
-        """Map EDI to FHIR resources."""
+
+    async def _map_to_fhir_production(self, parsed_edi: ParsedEDI) -> FHIRMapping:
+        """Production-grade FHIR mapping with comprehensive error handling."""
         try:
-            # Run in thread pool for CPU-bound operation
+            # Use production FHIR mapper
             loop = asyncio.get_event_loop()
             fhir_mapping = await loop.run_in_executor(
                 None, self.fhir_mapper.map_to_fhir, parsed_edi
             )
             
-            # The mapper now returns FHIRMapping directly
-            if isinstance(fhir_mapping, FHIRMapping):
-                logger.info(f"Successfully mapped {len(fhir_mapping.resources)} FHIR resources")
-                return fhir_mapping
-            else:
-                # Handle legacy FHIRMappingResult format if still returned
-                fhir_resources = []
-                if hasattr(fhir_mapping, 'fhir_bundle') and fhir_mapping.fhir_bundle and 'entry' in fhir_mapping.fhir_bundle:
-                    for entry in fhir_mapping.fhir_bundle['entry']:
-                        resource_data = entry.get('resource', {})
-                        resource_type = resource_data.get('resourceType', 'Unknown')
-                        resource_id = resource_data.get('id', '')
-                        
-                        fhir_resources.append(FHIRResource(
-                            resource_type=resource_type,
-                            id=resource_id,
-                            data=resource_data
-                        ))
-                
-                return FHIRMapping(
-                    resources=fhir_resources,
-                    mapping_version="1.0",
-                    mapped_at=getattr(fhir_mapping, 'generated_at', datetime.utcnow()),
-                    source_segments=[seg.segment_id for seg in parsed_edi.segments[:10]]
-                )
+            # Validate FHIR mapping results
+            if not fhir_mapping.resources or len(fhir_mapping.resources) == 0:
+                raise EDIProcessingError("No FHIR resources were created")
             
-        except FHIRMappingError as e:
-            logger.error(f"FHIR mapping failed: {str(e)}")
-            raise
+            logger.info(f"Successfully created {len(fhir_mapping.resources)} FHIR resources")
+            return fhir_mapping
+            
         except Exception as e:
-            logger.error(f"Unexpected FHIR mapping error: {str(e)}")
+            logger.error(f"Production FHIR mapping failed: {str(e)}")
             raise EDIProcessingError(f"Failed to map to FHIR: {str(e)}")
-    
-    def get_job(self, job_id: str) -> Optional[ProcessingJob]:
-        """Get job by ID."""
-        return self.jobs.get(job_id)
-    
-    def get_all_jobs(self) -> Dict[str, ProcessingJob]:
-        """Get all jobs (for admin/monitoring)."""
-        return self.jobs.copy()
-    
-    async def export_results(self, job_id: str, format: str = "json") -> Optional[str]:
-        """
-        Export job results in specified format.
-        
-        Args:
-            job_id: Job identifier
-            format: Export format (json, xml, edi, validation)
+
+    def _update_stats(self, success: bool, tr3_compliant: bool, processing_time: float = 0.0):
+        """Update processing statistics for monitoring and reporting."""
+        try:
+            self.processing_stats['total_processed'] += 1
             
-        Returns:
-            str: Exported content or None if job not found
-        """
-        job = self.get_job(job_id)
-        if not job:
-            return None
-        
-        try:
-            if format == "json":
-                return self._export_as_json(job)
-            elif format == "xml":
-                return self._export_as_xml(job)
-            elif format == "edi":
-                return await self._export_as_edi(job)
-            elif format == "validation":
-                return self._export_validation_report(job)
+            if success:
+                self.processing_stats['successful'] += 1
             else:
-                raise EDIProcessingError(f"Unsupported export format: {format}")
+                self.processing_stats['failed'] += 1
+            
+            if tr3_compliant:
+                self.processing_stats['tr3_compliant'] += 1
+            else:
+                self.processing_stats['tr3_non_compliant'] += 1
+            
+            # Update average processing time
+            if processing_time > 0:
+                current_avg = self.processing_stats['average_processing_time']
+                total = self.processing_stats['total_processed']
+                new_avg = ((current_avg * (total - 1)) + processing_time) / total
+                self.processing_stats['average_processing_time'] = new_avg
                 
         except Exception as e:
-            logger.error(f"Export failed for job {job_id}: {str(e)}")
-            raise EDIProcessingError(f"Export failed: {str(e)}")
-    
-    def _export_as_json(self, job: ProcessingJob) -> str:
-        """Export results as JSON."""
+            logger.warning(f"Failed to update statistics: {str(e)}")
+
+    def get_production_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive production statistics."""
         try:
-            if job.fhir_mapping and job.fhir_mapping.resources:
-                # Export FHIR resources as JSON
-                export_data = {
-                    "resourceType": "Bundle",
-                    "id": job.job_id,
-                    "type": "collection",
-                    "timestamp": job.fhir_mapping.mapped_at.isoformat(),
-                    "entry": []
-                }
-                
-                for resource in job.fhir_mapping.resources:
-                    export_data["entry"].append({
-                        "resource": resource.data
-                    })
-                
-                import json
-                return json.dumps(export_data, indent=2)
-            else:
-                # Export parsed EDI data as JSON
-                return self._export_parsed_edi_as_json(job)
-                
+            total = self.processing_stats['total_processed']
+            success_rate = (self.processing_stats['successful'] / total * 100) if total > 0 else 0
+            tr3_compliance_rate = (self.processing_stats['tr3_compliant'] / total * 100) if total > 0 else 0
+            
+            return {
+                **self.processing_stats,
+                'success_rate': round(success_rate, 2),
+                'tr3_compliance_rate': round(tr3_compliance_rate, 2),
+                'active_jobs': len(self.jobs),
+                'system_status': 'healthy' if success_rate >= 90 else 'degraded' if success_rate >= 70 else 'critical'
+            }
         except Exception as e:
-            raise EDIProcessingError(f"JSON export failed: {str(e)}")
-    
-    def _export_parsed_edi_as_json(self, job: ProcessingJob) -> str:
-        """Export parsed EDI data as JSON."""
-        if not job.parsed_edi:
-            raise EDIProcessingError("No parsed EDI data available")
-        
-        # Create a JSON representation of the parsed EDI
-        export_data = {
-            "job_id": job.job_id,
-            "filename": job.filename,
-            "processing_status": job.status,
-            "file_size": job.parsed_edi.file_size,
-            "parsed_at": job.parsed_edi.parsed_at.isoformat(),
-            "header": {
-                "transaction_type": job.parsed_edi.header.transaction_type,
-                "version": job.parsed_edi.header.version,
-                "sender_id": job.parsed_edi.header.sender_id,
-                "receiver_id": job.parsed_edi.header.receiver_id,
-                "isa_control_number": job.parsed_edi.header.isa_control_number,
-                "gs_control_number": job.parsed_edi.header.gs_control_number,
-                "st_control_number": job.parsed_edi.header.st_control_number,
-                "interchange_date": job.parsed_edi.header.interchange_date.isoformat() if job.parsed_edi.header.interchange_date else None
-            },
-            "segments": [
-                {
-                    "segment_id": seg.segment_id,
-                    "elements": seg.elements,
-                    "position": seg.position,
-                    "loop_id": seg.loop_id,
-                    "hl_level": seg.hl_level
-                }
-                for seg in job.parsed_edi.segments
-            ],
-            "validation": self._serialize_validation_result(job.validation_result) if job.validation_result else None,
-            "ai_analysis": self._serialize_ai_analysis(job.ai_analysis) if job.ai_analysis else None
-        }
-        
-        import json
-        return json.dumps(export_data, indent=2)
-    
-    def _serialize_validation_result(self, validation_result) -> dict:
-        """Serialize validation result to JSON-compatible format."""
-        if not validation_result:
-            return {}
-        
-        result = {
-            "is_valid": validation_result.is_valid,
-            "tr3_compliance": validation_result.tr3_compliance,
-            "segments_validated": validation_result.segments_validated,
-            "validation_time": validation_result.validation_time,
-            "suggested_improvements": validation_result.suggested_improvements or []
-        }
-        
-        # Properly serialize ValidationIssue objects
-        if hasattr(validation_result, 'issues') and validation_result.issues:
-            result["issues"] = []
-            for issue in validation_result.issues:
-                try:
-                    if hasattr(issue, 'model_dump'):
-                        # Pydantic v2 model
-                        result["issues"].append(issue.model_dump())
-                    elif hasattr(issue, 'dict'):
-                        # Pydantic v1 model
-                        result["issues"].append(issue.dict())
-                    elif isinstance(issue, dict):
-                        # Already a dict
-                        result["issues"].append(issue)
-                    else:
-                        # Convert to dict manually
-                        issue_dict = {
-                            "level": str(getattr(issue, 'level', 'unknown')),
-                            "code": str(getattr(issue, 'code', 'UNKNOWN')),
-                            "message": str(getattr(issue, 'message', str(issue))),
-                            "segment": str(getattr(issue, 'segment', '')) if getattr(issue, 'segment', None) else None,
-                            "element": str(getattr(issue, 'element', '')) if getattr(issue, 'element', None) else None,
-                            "line_number": int(getattr(issue, 'line_number', 0)) if getattr(issue, 'line_number', None) else None,
-                            "suggested_fix": str(getattr(issue, 'suggested_fix', '')) if getattr(issue, 'suggested_fix', None) else None
-                        }
-                        result["issues"].append(issue_dict)
-                except Exception as e:
-                    # Fallback for problematic objects
-                    result["issues"].append({
-                        "level": "error",
-                        "code": "SERIALIZATION_ERROR",
-                        "message": f"Failed to serialize validation issue: {str(e)}",
-                        "segment": None,
-                        "element": None,
-                        "line_number": None,
-                        "suggested_fix": None
-                    })
-        else:
-            result["issues"] = []
-        
-        return result
-    
-    def _serialize_ai_analysis(self, ai_analysis) -> dict:
-        """Serialize AI analysis to JSON-compatible format."""
-        if not ai_analysis:
-            return {}
-        
+            logger.error(f"Failed to generate statistics: {str(e)}")
+            return {'error': 'Statistics unavailable', 'total_processed': 0}
+
+    async def validate_production_readiness(self) -> Dict[str, Any]:
+        """Validate system production readiness with comprehensive checks."""
         try:
-            # Handle both Pydantic models and dict objects
-            if hasattr(ai_analysis, 'model_dump'):
-                # Pydantic v2 model
-                return ai_analysis.model_dump()
-            elif hasattr(ai_analysis, 'dict'):
-                # Pydantic v1 model
-                return ai_analysis.dict()
-            elif isinstance(ai_analysis, dict):
-                # Already a dict
-                return ai_analysis
+            readiness_report = {
+                'overall_status': 'unknown',
+                'components': {},
+                'recommendations': [],
+                'blocking_issues': []
+            }
+            
+            # Check core components
+            try:
+                # Test parser
+                test_content = "ISA*00*          *00*          *ZZ*SENDER*ZZ*RECEIVER*250620*1909*U*00501*000000001*0*P*>~GS*HS*SENDER*RECEIVER*20250620*1909*1*X*005010X279A1~ST*278*0001~BHT*0078*00*REF123*20250620*1909*01~SE*4*0001~GE*1*1~IEA*1*000000001~"
+                parsed = self.parser.parse_content(test_content, "test.edi")
+                readiness_report['components']['parser'] = 'operational'
+            except Exception as e:
+                readiness_report['components']['parser'] = f'failed: {str(e)}'
+                readiness_report['blocking_issues'].append('Parser component failure')
+            
+            # Test validator
+            try:
+                if 'parser' in readiness_report['components'] and readiness_report['components']['parser'] == 'operational':
+                    validation = self.production_validator.validate_strict_tr3_compliance(parsed)
+                    readiness_report['components']['validator'] = 'operational'
+                else:
+                    readiness_report['components']['validator'] = 'skipped - parser failed'
+            except Exception as e:
+                readiness_report['components']['validator'] = f'failed: {str(e)}'
+                readiness_report['blocking_issues'].append('Validator component failure')
+            
+            # Test FHIR mapper
+            try:
+                if 'parser' in readiness_report['components'] and readiness_report['components']['parser'] == 'operational':
+                    fhir_result = self.fhir_mapper.map_to_fhir(parsed)
+                    readiness_report['components']['fhir_mapper'] = 'operational'
+                else:
+                    readiness_report['components']['fhir_mapper'] = 'skipped - parser failed'
+            except Exception as e:
+                readiness_report['components']['fhir_mapper'] = f'failed: {str(e)}'
+                readiness_report['blocking_issues'].append('FHIR mapper component failure')
+            
+            # Test AI analyzer
+            readiness_report['components']['ai_analyzer'] = 'operational' if self.ai_analyzer.is_available else 'disabled'
+            
+            # Determine overall status
+            operational_components = sum(1 for status in readiness_report['components'].values() if status == 'operational')
+            total_critical_components = 3  # parser, validator, fhir_mapper
+            
+            if len(readiness_report['blocking_issues']) == 0 and operational_components >= total_critical_components:
+                readiness_report['overall_status'] = 'production_ready'
+            elif operational_components >= 2:
+                readiness_report['overall_status'] = 'limited_operation'
+                readiness_report['recommendations'].append('Some components not operational - limited functionality')
             else:
-                # Convert to dict manually
-                return {
-                    "anomalies_detected": getattr(ai_analysis, 'anomalies_detected', []),
-                    "confidence_score": getattr(ai_analysis, 'confidence_score', 0.0),
-                    "suggested_fixes": getattr(ai_analysis, 'suggested_fixes', []),
-                    "pattern_analysis": getattr(ai_analysis, 'pattern_analysis', {}),
-                    "risk_assessment": getattr(ai_analysis, 'risk_assessment', 'unknown')
-                }
+                readiness_report['overall_status'] = 'not_ready'
+                readiness_report['recommendations'].append('Critical component failures prevent production deployment')
+            
+            return readiness_report
+            
         except Exception as e:
-            logger.warning(f"Failed to serialize AI analysis: {str(e)}")
-            return {"error": "serialization_failed", "message": str(e)}
-    
-    def _export_as_xml(self, job: ProcessingJob) -> str:
-        """Export FHIR resources as XML."""
-        if not job.fhir_mapping:
-            raise EDIProcessingError("No FHIR mapping available for XML export")
-        
-        # Basic XML export (in production, use proper FHIR XML serialization)
-        xml_content = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        xml_content += '<Bundle xmlns="http://hl7.org/fhir">\n'
-        xml_content += f'  <id value="{job.job_id}"/>\n'
-        xml_content += '  <type value="collection"/>\n'
-        
-        for resource in job.fhir_mapping.resources:
-            xml_content += f'  <entry>\n'
-            xml_content += f'    <resource>\n'
-            xml_content += f'      <{resource.resource_type}>\n'
-            xml_content += f'        <id value="{resource.id}"/>\n'
-            xml_content += f'        <!-- Resource content -->\n'
-            xml_content += f'      </{resource.resource_type}>\n'
-            xml_content += f'    </resource>\n'
-            xml_content += f'  </entry>\n'
-        
-        xml_content += '</Bundle>'
-        return xml_content
-    
-    async def _export_as_edi(self, job: ProcessingJob) -> str:
-        """Export back to EDI format."""
-        if not job.parsed_edi:
-            raise EDIProcessingError("No parsed EDI data available")
-        
-        # Return the original raw content if available
-        return job.parsed_edi.raw_content
-    
-    def _export_validation_report(self, job: ProcessingJob) -> str:
-        """Export validation report."""
-        if not job.validation_result:
-            raise EDIProcessingError("No validation results available")
-        
-        report = {
-            "job_id": job.job_id,
-            "filename": job.filename,
-            "processing_time": job.processing_time,
-            "validation": self._serialize_validation_result(job.validation_result)
-        }
-        
-        # Add AI analysis if available
-        if job.ai_analysis:
-            report["ai_analysis"] = self._serialize_ai_analysis(job.ai_analysis)
-        
-        import json
-        return json.dumps(report, indent=2)
-    
-    def get_statistics(self) -> Dict[str, Any]:
-        """Get processing statistics."""
-        total_jobs = len(self.jobs)
-        completed_jobs = sum(1 for job in self.jobs.values() 
-                           if job.status == ProcessingStatus.COMPLETED)
-        failed_jobs = sum(1 for job in self.jobs.values() 
-                        if job.status == ProcessingStatus.FAILED)
-        
-        # Calculate average processing time
-        completed_with_time = [job for job in self.jobs.values() 
-                             if job.status == ProcessingStatus.COMPLETED and job.processing_time]
-        avg_processing_time = (sum(job.processing_time for job in completed_with_time) / 
-                             len(completed_with_time)) if completed_with_time else 0
-        
-        # Most common errors
-        common_errors = {}
-        for job in self.jobs.values():
-            if job.error_message:
-                error_type = job.error_message.split(':')[0]
-                common_errors[error_type] = common_errors.get(error_type, 0) + 1
-        
-        most_common_errors = sorted(common_errors.items(), key=lambda x: x[1], reverse=True)[:5]
-        
-        return {
-            "total_files_processed": total_jobs,
-            "successful_conversions": completed_jobs,
-            "failed_conversions": failed_jobs,
-            "success_rate": (completed_jobs / total_jobs * 100) if total_jobs > 0 else 0,
-            "average_processing_time": avg_processing_time,
-            "most_common_errors": [error[0] for error in most_common_errors],
-            "ai_enabled": self.ai_analyzer.is_available,
-            "last_updated": datetime.utcnow().isoformat()
-        }
-    
-    async def cleanup_old_jobs(self, max_age_hours: int = 24):
-        """Clean up old jobs to prevent memory issues."""
-        cutoff_time = datetime.utcnow().timestamp() - (max_age_hours * 3600)
-        
-        jobs_to_remove = []
-        for job_id, job in self.jobs.items():
-            if job.created_at.timestamp() < cutoff_time:
-                jobs_to_remove.append(job_id)
-        
-        for job_id in jobs_to_remove:
-            del self.jobs[job_id]
-            logger.info(f"Cleaned up old job: {job_id}")
-        
-        if jobs_to_remove:
-            logger.info(f"Cleaned up {len(jobs_to_remove)} old jobs")
+            logger.error(f"Production readiness check failed: {str(e)}")
+            return {
+                'overall_status': 'check_failed',
+                'error': str(e),
+                'blocking_issues': ['Production readiness check system failure']
+            }
+
+
+# Maintain compatibility with existing code
+class EDIProcessingService(ProductionEDIProcessingService):
+    """Compatibility alias for existing code."""
+    pass
