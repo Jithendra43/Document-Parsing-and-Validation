@@ -2488,7 +2488,7 @@ def create_processing_summary_chart(result, filename):
         orientation='h',
         marker_color=colors,
         text=statuses,
-        textposition='middle',
+        textposition='inside',
         textfont_size=12
     )])
     
